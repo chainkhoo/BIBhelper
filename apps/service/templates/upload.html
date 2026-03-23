@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}上传 | BIBhelper{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>上传 PDF</h1>
+  <p>单次最多 {{ max_upload_files }} 个 PDF，服务会自动处理并生成 ZIP。</p>
+  <form method="post" action="/upload" enctype="multipart/form-data" class="stack">
+    <input type="file" name="files" accept="application/pdf" multiple required>
+    <button type="submit">上传并处理</button>
+  </form>
+</section>
+{% endblock %}

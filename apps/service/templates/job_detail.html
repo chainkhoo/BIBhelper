@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}任务详情 | BIBhelper{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-header">
+    <h1>任务 {{ job.job_id }}</h1>
+    {% if job.status == "completed" %}
+    <a class="button-link" href="/jobs/{{ job.job_id }}/download">下载 ZIP</a>
+    {% endif %}
+  </div>
+  <p><strong>状态:</strong> <span class="status status-{{ job.status }}">{{ job.status }}</span></p>
+  <p><strong>创建时间:</strong> {{ job.created_at }}</p>
+  <p><strong>过期时间:</strong> {{ job.expires_at }}</p>
+  <p><strong>原始文件:</strong> {{ ", ".join(job.original_filenames) }}</p>
+  {% if job.error_message %}
+  <p class="error">{{ job.error_message }}</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>生成文件</h2>
+  {% if job.artifacts %}
+  <ul class="artifact-list">
+    {% for artifact in job.artifacts %}
+    <li>
+      <a href="/jobs/{{ job.job_id }}/artifacts/{{ artifact.relative_path }}">{{ artifact.relative_path }}</a>
+      <span class="muted">{{ artifact.kind }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>暂无产物。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>任务摘要</h2>
+  <pre class="json-block">{{ job | tojson(indent=2) }}</pre>
+</section>
+{% endblock %}

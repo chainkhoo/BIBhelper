@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bibhelper"
+version = "0.1.0"
+description = "BIBhelper CLI and online service"
+requires-python = ">=3.11"
+dependencies = [
+  "colorama",
+  "docx2pdf",
+  "fastapi",
+  "itsdangerous",
+  "jinja2",
+  "pdfplumber",
+  "pymupdf",
+  "python-docx",
+  "python-multipart",
+  "requests",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx",
+]
+
+[tool.setuptools]
+package-dir = {"" = "packages/bib_core/src"}
+
+[tool.setuptools.packages.find]
+where = ["packages/bib_core/src"]

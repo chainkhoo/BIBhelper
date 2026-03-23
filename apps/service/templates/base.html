@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}BIBhelper{% endblock %}</title>
+  {% if refresh_seconds %}
+  <meta http-equiv="refresh" content="{{ refresh_seconds }}">
+  {% endif %}
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">BIBhelper</div>
+    <nav>
+      <a href="/jobs">历史记录</a>
+      <a href="/upload">上传</a>
+      <form method="post" action="/logout" class="inline-form">
+        <button type="submit">退出</button>
+      </form>
+    </nav>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

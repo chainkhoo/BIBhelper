@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 
 aiahelper_pro/
+.local-service-data/
+.test-service-data/
 
 *.pdf
 *.docx
@@ -10,4 +12,6 @@ aiahelper_pro/
 
 !templates/*.docx
 !templates/*.png
+!packages/bib_core/src/bib_core/resources/*.docx
+!packages/bib_core/src/bib_core/resources/*.png
 templates/template_edu_single.docx

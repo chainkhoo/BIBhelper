@@ -1,0 +1,20 @@
+services:
+  bibhelper:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      SHORTCUT_API_TOKEN: change-me-token
+      WEB_ADMIN_PASSWORD: change-me-password
+      SESSION_SECRET: change-me-session-secret
+      JOB_RETENTION_DAYS: 7
+      MAX_UPLOAD_FILES: 5
+      MAX_UPLOAD_BYTES: 52428800
+      MAX_CONCURRENT_JOBS: 1
+    ports:
+      - "8000:8000"
+    volumes:
+      - bibhelper-data:/data/bibhelper
+
+volumes:
+  bibhelper-data:
