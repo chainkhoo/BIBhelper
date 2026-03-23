@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+aiahelper_pro/
+
+*.pdf
+*.docx
+*.rtf
+
+!templates/*.docx
+!templates/*.png
+templates/template_edu_single.docx
