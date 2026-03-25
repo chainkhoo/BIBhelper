@@ -201,6 +201,17 @@ def serialize_task(task: dict) -> dict:
     }
 
 
+def build_result_filename(artifacts: list[GeneratedArtifact], original_filenames: list[str]) -> str:
+    customer_name = next((artifact.customer_name for artifact in artifacts if artifact.customer_name), None)
+    base_name = customer_name or "保险总结书"
+    safe_name = "".join("_" if char in '<>:"/\\|?*\n\r\t' else char for char in base_name).strip(" .")
+    if not safe_name:
+        safe_name = "保险总结书"
+    if customer_name:
+        return f"{safe_name}保险总结书.zip"
+    return f"{safe_name}.zip"
+
+
 def ensure_pdf_uploads(files: list[UploadFile], max_upload_files: int, max_upload_bytes: int):
     if not files:
         raise HTTPException(status_code=400, detail="至少上传 1 个 PDF 文件。")
@@ -244,6 +255,7 @@ def process_job(app: FastAPI, job_id: str) -> dict:
     store: JobStore = app.state.job_store
     config: ServiceConfig = app.state.service_config
     processor: Callable[[RunOptions], RunResult] = app.state.processor
+    job_data = store.load_job(job_id)
     input_files = sorted(store.incoming_dir(job_id).glob("*.pdf"))
     result = processor(
         RunOptions(
@@ -255,9 +267,11 @@ def process_job(app: FastAPI, job_id: str) -> dict:
         )
     )
     create_zip_from_output(store.output_dir(job_id), store.zip_path(job_id))
+    result_filename = build_result_filename(result.artifacts, job_data.get("original_filenames", []))
     return store.update_job(
         job_id,
         status="completed",
+        result_filename=result_filename,
         artifacts=[serialize_artifact(artifact) for artifact in result.artifacts],
         warnings=result.warnings,
         classified=result.classified,
@@ -415,13 +429,17 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
         if redirect:
             return redirect
         try:
-            app.state.job_store.load_job(job_id)
+            job_data = app.state.job_store.load_job(job_id)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="任务不存在。")
         zip_path = app.state.job_store.zip_path(job_id)
         if not zip_path.exists():
             raise HTTPException(status_code=404, detail="结果文件不存在。")
-        return FileResponse(zip_path, filename="result.zip", media_type="application/zip")
+        return FileResponse(
+            zip_path,
+            filename=job_data.get("result_filename") or "result.zip",
+            media_type="application/zip",
+        )
 
     @app.get("/jobs/{job_id}/artifacts/{artifact_name:path}")
     def web_download_artifact(request: Request, job_id: str, artifact_name: str):
@@ -456,9 +474,10 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
         finally:
             release_slot(app)
         zip_path = app.state.job_store.zip_path(job_data["job_id"])
+        job_data = app.state.job_store.load_job(job_data["job_id"])
         return FileResponse(
             zip_path,
-            filename="result.zip",
+            filename=job_data.get("result_filename") or "result.zip",
             media_type="application/zip",
             headers={"X-Job-Id": job_data["job_id"]},
         )
@@ -475,7 +494,7 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
     def api_job_download(job_id: str, request: Request):
         require_api_token(request)
         try:
-            app.state.job_store.load_job(job_id)
+            job_data = app.state.job_store.load_job(job_id)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="任务不存在。")
         zip_path = app.state.job_store.zip_path(job_id)
@@ -483,7 +502,7 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
             raise HTTPException(status_code=404, detail="结果文件不存在。")
         return FileResponse(
             zip_path,
-            filename="result.zip",
+            filename=job_data.get("result_filename") or "result.zip",
             media_type="application/zip",
             headers={"X-Job-Id": job_id},
         )

@@ -179,6 +179,7 @@ class ServiceTests(unittest.TestCase):
         )
         self.assertEqual(status_response.status_code, 200)
         self.assertEqual(status_response.json()["status"], "completed")
+        self.assertEqual(status_response.json()["result_filename"], "Mary Jane保险总结书.zip")
 
         download_response = self.client.get(
             f"/api/v1/jobs/{job_id}/download",
