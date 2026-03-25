@@ -95,7 +95,7 @@ uvicorn apps.service.app.main:app --host 0.0.0.0 --port 8000
 - `SESSION_SECRET`
   会话签名密钥
 - `JOB_RETENTION_DAYS`
-  结果保留天数，默认 `7`
+  结果保留天数，默认 `0`；设置为 `0` 表示永久保留，不自动清理
 - `MAX_UPLOAD_FILES`
   单次最大文件数，默认 `5`
 - `MAX_UPLOAD_BYTES`
@@ -104,6 +104,8 @@ uvicorn apps.service.app.main:app --host 0.0.0.0 --port 8000
   同时处理的任务数，默认 `1`
 - `BIBHELPER_DATA_ROOT`
   服务端任务目录，默认 `/data/bibhelper`
+- `BIBHELPER_HOST_DATA_ROOT`
+  Docker 宿主机持久化目录，默认 `/opt/bibhelper-data`
 
 ## Docker 部署
 
@@ -112,6 +114,19 @@ docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 容器默认监听 `127.0.0.1:8000`，数据目录挂载到 `/data/bibhelper`。生产环境建议放在现有 Nginx 或 Caddy 后面，由反向代理处理 HTTPS、上传大小和超时。
+
+当前 compose 默认使用宿主机目录挂载，并默认永久保留任务历史：
+
+```text
+/opt/bibhelper-data:/data/bibhelper
+```
+
+因此以下内容都会永久保存在服务器磁盘中，不会因为容器更新而消失：
+
+- `jobs/`
+- `templates/current/`
+- `templates/history/`
+- 模板 HTML / 预览 / 元数据
 
 ### 方案 B：服务器本地 build，但依赖层缓存
 
@@ -147,6 +162,21 @@ docker compose -f deploy/docker-compose.ghcr.yml up -d
 ```
 
 如果你已经在 1Panel 上使用编排部署，建议后续切到 `deploy/docker-compose.ghcr.yml`，这样服务器更新时只需要拉镜像，不再本地构建。
+
+### 从旧 named volume 迁移到宿主机目录
+
+如果你之前用的是 Docker named volume，而不是宿主机目录挂载，需要先把旧数据迁到 `/opt/bibhelper-data`：
+
+```bash
+docker volume ls | grep bibhelper-data
+mkdir -p /opt/bibhelper-data
+docker run --rm \
+  -v <你的旧 volume 名称>:/from \
+  -v /opt/bibhelper-data:/to \
+  alpine sh -c 'cp -a /from/. /to/'
+```
+
+迁移完成后再启动新的 compose 文件。
 
 ## 运行测试
 

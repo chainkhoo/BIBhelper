@@ -7,6 +7,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 from docx import Document
+from docx.shared import Pt
 
 
 os.environ.setdefault("AIA_SKIP_VENV", "1")
@@ -145,6 +146,44 @@ class HtmlRenderingTests(unittest.TestCase):
             self.assertIn("Mary Jane", rendered_html.read_text(encoding="utf-8"))
             html_pdf_mock.assert_called_once()
             docx_pdf_mock.assert_not_called()
+
+    def test_template_html_preserves_docx_default_font_and_layout_css(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            data_root = Path(tempdir)
+            config = ServiceConfig(
+                data_root=data_root,
+                job_retention_days=7,
+                max_upload_files=5,
+                max_upload_bytes=50 * 1024 * 1024,
+                max_concurrent_jobs=1,
+                shortcut_api_token="token-123",
+                web_admin_password="pass-123",
+                session_secret="secret-123",
+                templates_dir=ROOT / "apps/service/templates",
+                static_dir=ROOT / "apps/service/static",
+                enable_pdf=False,
+            )
+            app = create_app(config=config, processor=ServiceTests.fake_processor)
+            template_store = app.state.template_store
+
+            replacement_path = data_root / "template_savings_standalone.docx"
+            document = Document()
+            document.styles["Normal"].font.name = "Times New Roman"
+            document.styles["Normal"].font.size = Pt(14)
+            document.add_paragraph("客户：{name}")
+            table = document.add_table(rows=1, cols=1)
+            table.cell(0, 0).text = "{age}"
+            document.save(replacement_path)
+
+            with replacement_path.open("rb") as handle:
+                upload = type("Upload", (), {"filename": replacement_path.name, "file": handle})()
+                template_store.save_upload("savings_single", upload)
+
+            html_text = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
+            self.assertIn('font-family: "Times New Roman"', html_text)
+            self.assertIn("font-size: 14pt", html_text)
+            self.assertIn("text-align: center", html_text)
+            self.assertIn("max-width: 100%", html_text)
 
 
 class ServiceTests(unittest.TestCase):

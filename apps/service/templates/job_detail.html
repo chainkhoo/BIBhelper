@@ -10,7 +10,7 @@
   </div>
   <p><strong>状态:</strong> <span class="status status-{{ job.status }}">{{ job.status }}</span></p>
   <p><strong>创建时间:</strong> {{ job.created_at }}</p>
-  <p><strong>过期时间:</strong> {{ job.expires_at }}</p>
+  <p><strong>过期时间:</strong> {{ job.expires_at or "永久保留" }}</p>
   <p><strong>原始文件:</strong> {{ ", ".join(job.original_filenames) }}</p>
   {% if job.error_message %}
   <p class="error">{{ job.error_message }}</p>

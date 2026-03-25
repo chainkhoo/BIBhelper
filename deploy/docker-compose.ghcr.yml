@@ -4,11 +4,10 @@ services:
     image: ghcr.io/chainkhoo/bibhelper:latest
     pull_policy: always
     restart: unless-stopped
+    env_file:
+      - ./.env.runtime
     environment:
-      SHORTCUT_API_TOKEN: change-me-token
-      WEB_ADMIN_PASSWORD: change-me-password
-      SESSION_SECRET: change-me-session-secret
-      JOB_RETENTION_DAYS: 7
+      JOB_RETENTION_DAYS: 0
       MAX_UPLOAD_FILES: 5
       MAX_UPLOAD_BYTES: 52428800
       MAX_CONCURRENT_JOBS: 1
@@ -16,7 +15,4 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      - bibhelper-data:/data/bibhelper
-
-volumes:
-  bibhelper-data:
+      - ${BIBHELPER_HOST_DATA_ROOT:-/opt/bibhelper-data}:/data/bibhelper

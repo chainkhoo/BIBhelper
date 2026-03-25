@@ -3,7 +3,7 @@
 {% block content %}
 <section class="card">
   <div class="section-header">
-    <h1>近 7 天任务</h1>
+    <h1>{% if retention_days and retention_days > 0 %}近 {{ retention_days }} 天任务{% else %}全部任务历史{% endif %}</h1>
     <a class="button-link" href="/upload">新建任务</a>
   </div>
   {% if jobs %}

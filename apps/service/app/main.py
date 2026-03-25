@@ -20,6 +20,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from docx import Document
+from docx.oxml.ns import qn
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -73,7 +75,7 @@ class ServiceConfig:
         service_root = Path(__file__).resolve().parents[1]
         return cls(
             data_root=Path(os.environ.get("BIBHELPER_DATA_ROOT", "/data/bibhelper")).expanduser(),
-            job_retention_days=int(os.environ.get("JOB_RETENTION_DAYS", "7")),
+            job_retention_days=int(os.environ.get("JOB_RETENTION_DAYS", "0")),
             max_upload_files=int(os.environ.get("MAX_UPLOAD_FILES", "5")),
             max_upload_bytes=int(os.environ.get("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))),
             max_concurrent_jobs=int(os.environ.get("MAX_CONCURRENT_JOBS", "1")),
@@ -126,11 +128,17 @@ TEMPLATE_DEFINITIONS = {
 
 class TemplateStore:
     TEMPLATE_HTML_CSS = """
+:root {
+  --doc-font-family: %(doc_font_family)s;
+  --doc-font-size: %(doc_font_size)s;
+  --doc-content-width: %(doc_content_width)s;
+}
 body {
   margin: 0;
   background: #f5f1e8;
   color: #1f2933;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  font-family: var(--doc-font-family);
+  font-size: var(--doc-font-size);
 }
 .preview-banner {
   background: #0f766e;
@@ -140,34 +148,78 @@ body {
   letter-spacing: 0.02em;
 }
 .template-document {
-  max-width: 900px;
+  width: var(--doc-content-width);
+  max-width: calc(100vw - 48px);
   margin: 24px auto;
   padding: 32px 36px;
   background: #fffdf8;
   box-shadow: 0 12px 36px rgba(31, 41, 51, 0.08);
   border-radius: 18px;
 }
+.template-document,
+.template-document p,
+.template-document li,
+.template-document td,
+.template-document th,
+.template-document span,
+.template-document div {
+  font-family: var(--doc-font-family);
+  font-size: var(--doc-font-size);
+}
 .template-document table {
-  width: 100%;
+  width: 100%%;
   border-collapse: collapse;
   margin: 16px 0;
+  table-layout: fixed;
 }
 .template-document td,
 .template-document th {
   border: 1px solid #d9d3c8;
   padding: 8px 10px;
-  vertical-align: top;
+  vertical-align: middle;
+  text-align: center;
 }
 .template-document p,
 .template-document li {
   line-height: 1.75;
 }
+.template-document td p,
+.template-document th p,
+.template-document td li,
+.template-document th li,
+.template-document td div,
+.template-document th div,
+.template-document td span,
+.template-document th span {
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
 .template-document h1,
 .template-document h2,
 .template-document h3 {
   line-height: 1.3;
+  font-family: var(--doc-font-family);
+}
+.template-document img {
+  display: block;
+  max-width: 100%% !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 12px auto;
+  object-fit: contain;
+}
+.template-document td img,
+.template-document th img {
+  display: inline-block;
 }
 """.strip()
+
+    DEFAULT_DOC_STYLE = {
+        "doc_font_family": '"PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif',
+        "doc_font_size": "12pt",
+        "doc_content_width": "720pt",
+    }
 
     def __init__(self, root: Path, default_root: Path):
         self.root = root
@@ -344,7 +396,43 @@ body {
         matches = re.findall(r"\{[^{}]+\}", text)
         return sorted(set(matches))
 
-    def _wrap_html(self, title: str, body_html: str) -> str:
+    def _extract_docx_style_config(self, source_path: Path) -> dict:
+        style_config = dict(self.DEFAULT_DOC_STYLE)
+        if source_path.suffix.lower() != ".docx":
+            return style_config
+        try:
+            document = Document(source_path)
+            normal_style = document.styles["Normal"]
+            font_name = normal_style.font.name
+            font_size = normal_style.font.size.pt if normal_style.font.size else None
+
+            rpr = getattr(normal_style._element, "rPr", None)
+            if rpr is not None and getattr(rpr, "rFonts", None) is not None:
+                font_name = (
+                    font_name
+                    or rpr.rFonts.get(qn("w:eastAsia"))
+                    or rpr.rFonts.get(qn("w:ascii"))
+                    or rpr.rFonts.get(qn("w:hAnsi"))
+                )
+
+            if font_name:
+                style_config["doc_font_family"] = f'"{font_name}", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif'
+            if font_size:
+                style_config["doc_font_size"] = f"{font_size:g}pt"
+
+            if document.sections:
+                section = document.sections[0]
+                content_width = (
+                    section.page_width - section.left_margin - section.right_margin
+                ).pt
+                if content_width and content_width > 0:
+                    style_config["doc_content_width"] = f"{content_width:g}pt"
+        except Exception:
+            return style_config
+        return style_config
+
+    def _wrap_html(self, title: str, body_html: str, style_config: dict | None = None) -> str:
+        css = self.TEMPLATE_HTML_CSS % {**self.DEFAULT_DOC_STYLE, **(style_config or {})}
         return (
             "<!doctype html>\n"
             '<html lang="zh-CN">\n'
@@ -353,7 +441,7 @@ body {
             '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
             f"  <title>{escape(title)}</title>\n"
             "  <style>\n"
-            f"{self.TEMPLATE_HTML_CSS}\n"
+            f"{css}\n"
             "  </style>\n"
             "</head>\n"
             "<body>\n"
@@ -454,9 +542,10 @@ body {
                 fallback_to_docx = True
             else:
                 try:
+                    style_config = self._extract_docx_style_config(source_path)
                     with source_path.open("rb") as handle:
                         result = mammoth.convert_to_html(handle)
-                    html_text = self._wrap_html(definition["label"], result.value)
+                    html_text = self._wrap_html(definition["label"], result.value, style_config=style_config)
                     assets["html"].write_text(html_text, encoding="utf-8")
                     assets["preview"].write_text(
                         self._build_preview_html(html_text, placeholders),
@@ -579,7 +668,7 @@ class JobStore:
     def create_job(self, original_filenames: list[str]) -> dict:
         job_id = uuid.uuid4().hex
         created_at = utc_now()
-        expires_at = created_at + timedelta(days=self.retention_days)
+        expires_at = None if self.retention_days <= 0 else created_at + timedelta(days=self.retention_days)
         job_dir = self.job_dir(job_id)
         self.incoming_dir(job_id).mkdir(parents=True, exist_ok=True)
         self.work_dir(job_id).mkdir(parents=True, exist_ok=True)
@@ -589,7 +678,7 @@ class JobStore:
             "job_id": job_id,
             "status": "processing",
             "created_at": isoformat(created_at),
-            "expires_at": isoformat(expires_at),
+            "expires_at": isoformat(expires_at) if expires_at else None,
             "original_filenames": original_filenames,
             "result_filename": "result.zip",
             "artifacts": [],
@@ -636,19 +725,21 @@ class JobStore:
 
     def list_recent_jobs(self) -> list[dict]:
         jobs = []
-        cutoff = utc_now() - timedelta(days=self.retention_days)
+        cutoff = None if self.retention_days <= 0 else utc_now() - timedelta(days=self.retention_days)
         for job_json in self.jobs_root.glob("*/job.json"):
             try:
                 data = json.loads(job_json.read_text(encoding="utf-8"))
             except Exception:
                 continue
             created_at = parse_timestamp(data.get("created_at"))
-            if created_at and created_at >= cutoff:
+            if cutoff is None or (created_at and created_at >= cutoff):
                 jobs.append(data)
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return jobs
 
     def cleanup_expired(self):
+        if self.retention_days <= 0:
+            return
         now = utc_now()
         for job_json in self.jobs_root.glob("*/job.json"):
             try:
@@ -1039,7 +1130,14 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
         if redirect:
             return redirect
         jobs = app.state.job_store.list_recent_jobs()
-        return templates.TemplateResponse(request, "jobs.html", {"jobs": jobs})
+        return templates.TemplateResponse(
+            request,
+            "jobs.html",
+            {
+                "jobs": jobs,
+                "retention_days": app.state.service_config.job_retention_days,
+            },
+        )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail_page(request: Request, job_id: str):

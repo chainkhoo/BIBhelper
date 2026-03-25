@@ -5,6 +5,10 @@ __pycache__/
 aiahelper_pro/
 .local-service-data/
 .test-service-data/
+deploy/.env.runtime
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
 
 *.pdf
 *.docx
