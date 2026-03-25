@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -10,6 +11,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 from typing import Callable
 
@@ -27,19 +29,29 @@ if str(CORE_SRC) not in sys.path:
 
 from bib_core import GeneratedArtifact, PipelineError, RunOptions, RunResult, run_pipeline
 
+try:
+    import mammoth
+except ImportError:  # pragma: no cover - handled via metadata status
+    mammoth = None
+
+SERVICE_TIMEZONE = timezone(timedelta(hours=8), name="GMT+8")
+
 
 def utc_now():
-    return datetime.now(timezone.utc)
+    return datetime.now(SERVICE_TIMEZONE)
 
 
 def isoformat(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    return dt.astimezone(SERVICE_TIMEZONE).replace(microsecond=0).isoformat()
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=SERVICE_TIMEZONE)
+    return parsed
 
 
 @dataclass
@@ -83,31 +95,80 @@ TEMPLATE_DEFINITIONS = {
         "filename": "template_savings_standalone.docx",
         "label": "储蓄险单独总结书模板",
         "description": "储蓄险单方案总结书模板。",
+        "convertible": True,
     },
     "savings_comparison": {
         "filename": "template_savings_comparison.docx",
         "label": "储蓄险对比总结书模板",
         "description": "储蓄险双方案对比总结书模板。",
+        "convertible": True,
     },
     "savings_single_45": {
         "filename": "template_savings_standalone_45.docx",
         "label": "储蓄险 45 岁专用模板",
         "description": "45 岁及以上客户的储蓄险单方案模板。",
+        "convertible": True,
     },
     "critical_illness_single": {
         "filename": "template_ci_single.docx",
         "label": "重疾险单独总结书模板",
         "description": "重疾险单方案总结书模板。",
+        "convertible": True,
     },
     "savings_overlay": {
         "filename": "aia_annotation_overlay.png",
         "label": "储蓄险投资总览图叠加模板",
         "description": "用于投资总览图标注叠加的 PNG 资源。",
+        "convertible": False,
     },
 }
 
 
 class TemplateStore:
+    TEMPLATE_HTML_CSS = """
+body {
+  margin: 0;
+  background: #f5f1e8;
+  color: #1f2933;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+}
+.preview-banner {
+  background: #0f766e;
+  color: #fff;
+  padding: 12px 18px;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.template-document {
+  max-width: 900px;
+  margin: 24px auto;
+  padding: 32px 36px;
+  background: #fffdf8;
+  box-shadow: 0 12px 36px rgba(31, 41, 51, 0.08);
+  border-radius: 18px;
+}
+.template-document table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+}
+.template-document td,
+.template-document th {
+  border: 1px solid #d9d3c8;
+  padding: 8px 10px;
+  vertical-align: top;
+}
+.template-document p,
+.template-document li {
+  line-height: 1.75;
+}
+.template-document h1,
+.template-document h2,
+.template-document h3 {
+  line-height: 1.3;
+}
+""".strip()
+
     def __init__(self, root: Path, default_root: Path):
         self.root = root
         self.default_root = default_root
@@ -126,6 +187,15 @@ class TemplateStore:
         definition = self.template_definition(template_id)
         return self.current_dir / definition["filename"]
 
+    def current_html_path(self, template_id: str) -> Path:
+        return self._asset_paths(self.current_dir, template_id)["html"]
+
+    def current_meta_path(self, template_id: str) -> Path:
+        return self._asset_paths(self.current_dir, template_id)["meta"]
+
+    def current_preview_path(self, template_id: str) -> Path:
+        return self._asset_paths(self.current_dir, template_id)["preview"]
+
     def default_path(self, template_id: str) -> Path:
         definition = self.template_definition(template_id)
         return self.default_root / definition["filename"]
@@ -135,14 +205,37 @@ class TemplateStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def history_version_path(self, template_id: str, version_name: str) -> Path:
+        return self.history_path(template_id) / version_name
+
+    def _asset_paths(self, base_dir: Path, template_id: str) -> dict[str, Path]:
+        definition = self.template_definition(template_id)
+        stem = Path(definition["filename"]).stem
+        return {
+            "source": base_dir / definition["filename"],
+            "html": base_dir / f"{stem}.html",
+            "meta": base_dir / f"{stem}.meta.json",
+            "preview": base_dir / f"{stem}.preview.html",
+        }
+
+    def _load_meta(self, path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _write_meta(self, path: Path, payload: dict):
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def ensure_defaults(self):
         for template_id in TEMPLATE_DEFINITIONS:
             current_path = self.current_path(template_id)
             if current_path.exists():
+                self._refresh_generated_assets(template_id)
                 continue
             source = self.default_path(template_id)
             if source.exists():
                 shutil.copy2(source, current_path)
+                self._refresh_generated_assets(template_id)
 
     def _serialize_file(self, path: Path) -> dict:
         stat = path.stat()
@@ -152,42 +245,247 @@ class TemplateStore:
             "updated_at": isoformat(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
         }
 
+    def _serialize_current(self, template_id: str) -> dict:
+        definition = self.template_definition(template_id)
+        assets = self._asset_paths(self.current_dir, template_id)
+        meta = self._load_meta(assets["meta"]) or {}
+        return {
+            "id": template_id,
+            "filename": definition["filename"],
+            "label": definition["label"],
+            "description": definition["description"],
+            "convertible": definition["convertible"],
+            "current": self._serialize_file(assets["source"]) if assets["source"].exists() else None,
+            "current_html": self._serialize_file(assets["html"]) if assets["html"].exists() else None,
+            "preview": self._serialize_file(assets["preview"]) if assets["preview"].exists() else None,
+            "meta_file": self._serialize_file(assets["meta"]) if assets["meta"].exists() else None,
+            "current_meta": meta,
+            "conversion_status": meta.get("conversion_status", "not_applicable"),
+            "warnings": meta.get("warnings", []),
+            "placeholder_summary": meta.get("placeholder_summary", []),
+            "history": self._list_history_versions(template_id),
+        }
+
+    def _serialize_history_version(self, template_id: str, version_path: Path) -> dict | None:
+        if version_path.is_file():
+            source = self._serialize_file(version_path)
+            return {
+                "name": version_path.name,
+                "source": source,
+                "html": None,
+                "preview": None,
+                "meta_file": None,
+                "meta": None,
+                "conversion_status": "legacy",
+                "warnings": [],
+                "placeholder_summary": [],
+                "updated_at": source["updated_at"],
+                "sort_key": source["updated_at"],
+            }
+        if not version_path.is_dir():
+            return None
+        assets = self._asset_paths(version_path, template_id)
+        if not assets["source"].exists():
+            return None
+        source = self._serialize_file(assets["source"])
+        meta = self._load_meta(assets["meta"]) or {}
+        return {
+            "name": version_path.name,
+            "source": source,
+            "html": self._serialize_file(assets["html"]) if assets["html"].exists() else None,
+            "preview": self._serialize_file(assets["preview"]) if assets["preview"].exists() else None,
+            "meta_file": self._serialize_file(assets["meta"]) if assets["meta"].exists() else None,
+            "meta": meta,
+            "conversion_status": meta.get("conversion_status", "not_applicable"),
+            "warnings": meta.get("warnings", []),
+            "placeholder_summary": meta.get("placeholder_summary", []),
+            "updated_at": meta.get("updated_at", source["updated_at"]),
+            "sort_key": meta.get("updated_at", source["updated_at"]),
+        }
+
+    def _list_history_versions(self, template_id: str) -> list[dict]:
+        entries = []
+        for path in self.history_path(template_id).iterdir():
+            item = self._serialize_history_version(template_id, path)
+            if item:
+                entries.append(item)
+        entries.sort(key=lambda item: item["sort_key"], reverse=True)
+        for item in entries:
+            item.pop("sort_key", None)
+        return entries
+
     def list_templates(self) -> list[dict]:
-        items = []
-        for template_id, definition in TEMPLATE_DEFINITIONS.items():
-            current_path = self.current_path(template_id)
-            history_entries = [
-                self._serialize_file(path)
-                for path in sorted(self.history_path(template_id).glob("*"), key=lambda item: item.stat().st_mtime, reverse=True)
-                if path.is_file()
-            ]
-            items.append(
-                {
-                    "id": template_id,
-                    "filename": definition["filename"],
-                    "label": definition["label"],
-                    "description": definition["description"],
-                    "current": self._serialize_file(current_path) if current_path.exists() else None,
-                    "history": history_entries,
-                }
-            )
-        return items
+        return [self._serialize_current(template_id) for template_id in TEMPLATE_DEFINITIONS]
 
     def get_template(self, template_id: str) -> dict:
-        for item in self.list_templates():
-            if item["id"] == template_id:
-                return item
-        raise KeyError(template_id)
+        return self._serialize_current(template_id)
 
     def _archive_current(self, template_id: str):
-        current_path = self.current_path(template_id)
-        if not current_path.exists():
+        assets = self._asset_paths(self.current_dir, template_id)
+        if not assets["source"].exists():
             return None
-        timestamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
-        archived_name = f"{timestamp}__{current_path.name}"
-        archived_path = self.history_path(template_id) / archived_name
-        shutil.copy2(current_path, archived_path)
-        return archived_path
+        timestamp = utc_now().strftime("%Y%m%dT%H%M%S%f+0800")
+        version_dir = self.history_path(template_id) / timestamp
+        version_dir.mkdir(parents=True, exist_ok=True)
+        for path in assets.values():
+            if path.exists():
+                shutil.copy2(path, version_dir / path.name)
+        return version_dir
+
+    def _extract_placeholders(self, source_path: Path) -> list[str]:
+        if source_path.suffix.lower() != ".docx":
+            return []
+        try:
+            with zipfile.ZipFile(source_path) as archive:
+                xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+        except Exception:
+            return []
+        text = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml))
+        matches = re.findall(r"\{[^{}]+\}", text)
+        return sorted(set(matches))
+
+    def _wrap_html(self, title: str, body_html: str) -> str:
+        return (
+            "<!doctype html>\n"
+            '<html lang="zh-CN">\n'
+            "<head>\n"
+            '  <meta charset="utf-8">\n'
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"  <title>{escape(title)}</title>\n"
+            "  <style>\n"
+            f"{self.TEMPLATE_HTML_CSS}\n"
+            "  </style>\n"
+            "</head>\n"
+            "<body>\n"
+            '  <main class="template-document">\n'
+            f"{body_html}\n"
+            "  </main>\n"
+            "</body>\n"
+            "</html>\n"
+        )
+
+    def _sample_placeholder_value(self, placeholder: str) -> str:
+        key = placeholder.strip("{}").lower()
+        if "name" in key:
+            return "示例客户"
+        if "age" in key:
+            return "35"
+        if "gender" in key:
+            return "男"
+        if "smoke" in key:
+            return "非吸烟"
+        if "payment_term" in key:
+            return "5"
+        if "years_withdraw" in key:
+            return "20"
+        if "premium" in key:
+            return "12,000"
+        if "withdraw" in key:
+            return "8,800"
+        if "cashout" in key:
+            return "160,000"
+        if "balance" in key:
+            return "210,000"
+        if "coverage" in key:
+            return "500,000"
+        return "示例值"
+
+    def _build_preview_html(self, html_text: str, placeholders: list[str]) -> str:
+        preview_html = html_text
+        for placeholder in placeholders:
+            preview_html = preview_html.replace(placeholder, self._sample_placeholder_value(placeholder))
+        banner = '<div class="preview-banner">模板预览：以下内容为示例数据，仅用于检查转换效果。</div>'
+        return preview_html.replace("<body>", f"<body>\n{banner}\n", 1)
+
+    def _build_conversion_meta(
+        self,
+        template_id: str,
+        source_path: Path,
+        version_id: str,
+        status: str,
+        warnings: list[str],
+        placeholders: list[str],
+        html_path: Path | None,
+        preview_path: Path | None,
+        engine: str | None,
+        fallback_to_docx: bool,
+    ) -> dict:
+        updated_at = isoformat(datetime.fromtimestamp(source_path.stat().st_mtime, timezone.utc))
+        return {
+            "template_id": template_id,
+            "source_filename": source_path.name,
+            "source_format": source_path.suffix.lower().lstrip("."),
+            "updated_at": updated_at,
+            "conversion_status": status,
+            "conversion_engine": engine,
+            "warnings": warnings,
+            "html_filename": html_path.name if html_path and html_path.exists() else None,
+            "preview_filename": preview_path.name if preview_path and preview_path.exists() else None,
+            "fallback_to_docx": fallback_to_docx,
+            "placeholder_summary": placeholders,
+            "version_id": version_id,
+        }
+
+    def _refresh_generated_assets(self, template_id: str):
+        definition = self.template_definition(template_id)
+        assets = self._asset_paths(self.current_dir, template_id)
+        source_path = assets["source"]
+        if not source_path.exists():
+            for path in assets.values():
+                if path.exists():
+                    path.unlink()
+            return
+
+        placeholders = self._extract_placeholders(source_path)
+        warnings: list[str] = []
+        status = "not_applicable"
+        engine = None
+        fallback_to_docx = False
+
+        if not definition["convertible"]:
+            for key in ("html", "preview"):
+                if assets[key].exists():
+                    assets[key].unlink()
+        else:
+            engine = "mammoth"
+            if mammoth is None:
+                status = "failed"
+                warnings.append("未安装 mammoth，无法生成 HTML。")
+                fallback_to_docx = True
+            else:
+                try:
+                    with source_path.open("rb") as handle:
+                        result = mammoth.convert_to_html(handle)
+                    html_text = self._wrap_html(definition["label"], result.value)
+                    assets["html"].write_text(html_text, encoding="utf-8")
+                    assets["preview"].write_text(
+                        self._build_preview_html(html_text, placeholders),
+                        encoding="utf-8",
+                    )
+                    warnings = [f"{message.type}: {message.message}" for message in result.messages]
+                    status = "warning" if warnings else "success"
+                except Exception as exc:
+                    status = "failed"
+                    warnings.append(f"转换失败: {exc}")
+                    fallback_to_docx = True
+            if status == "failed":
+                for key in ("html", "preview"):
+                    if assets[key].exists():
+                        assets[key].unlink()
+
+        meta = self._build_conversion_meta(
+            template_id=template_id,
+            source_path=source_path,
+            version_id="current",
+            status=status,
+            warnings=warnings,
+            placeholders=placeholders,
+            html_path=assets["html"],
+            preview_path=assets["preview"],
+            engine=engine,
+            fallback_to_docx=fallback_to_docx,
+        )
+        self._write_meta(assets["meta"], meta)
 
     def save_upload(self, template_id: str, upload: UploadFile):
         definition = self.template_definition(template_id)
@@ -203,15 +501,53 @@ class TemplateStore:
         tmp_path = current_path.with_suffix(current_path.suffix + ".tmp")
         tmp_path.write_bytes(content)
         tmp_path.replace(current_path)
+        self._refresh_generated_assets(template_id)
         return current_path
 
     def restore_history(self, template_id: str, version_name: str):
-        history_file = (self.history_path(template_id) / version_name).resolve()
-        if not str(history_file).startswith(str(self.history_path(template_id).resolve())) or not history_file.exists():
+        history_root = self.history_path(template_id).resolve()
+        version_path = (history_root / version_name).resolve()
+        if not str(version_path).startswith(str(history_root)) or not version_path.exists():
             raise FileNotFoundError(version_name)
         self._archive_current(template_id)
-        shutil.copy2(history_file, self.current_path(template_id))
+        if version_path.is_file():
+            shutil.copy2(version_path, self.current_path(template_id))
+            self._refresh_generated_assets(template_id)
+            return self.current_path(template_id)
+        current_assets = self._asset_paths(self.current_dir, template_id)
+        history_assets = self._asset_paths(version_path, template_id)
+        if not history_assets["source"].exists():
+            raise FileNotFoundError(version_name)
+        shutil.copy2(history_assets["source"], current_assets["source"])
+        for key in ("html", "meta", "preview"):
+            if history_assets[key].exists():
+                shutil.copy2(history_assets[key], current_assets[key])
+            elif current_assets[key].exists():
+                current_assets[key].unlink()
+        if self.template_definition(template_id)["convertible"] and not current_assets["meta"].exists():
+            self._refresh_generated_assets(template_id)
         return self.current_path(template_id)
+
+    def current_asset_path(self, template_id: str, asset_type: str) -> Path:
+        assets = self._asset_paths(self.current_dir, template_id)
+        path = assets[asset_type]
+        if not path.exists():
+            raise FileNotFoundError(path.name)
+        return path
+
+    def history_asset_path(self, template_id: str, version_name: str, asset_type: str) -> Path:
+        history_root = self.history_path(template_id).resolve()
+        version_path = (history_root / version_name).resolve()
+        if not str(version_path).startswith(str(history_root)) or not version_path.exists():
+            raise FileNotFoundError(version_name)
+        if version_path.is_file():
+            if asset_type != "source":
+                raise FileNotFoundError(version_name)
+            return version_path
+        path = self._asset_paths(version_path, template_id)[asset_type]
+        if not path.exists():
+            raise FileNotFoundError(version_name)
+        return path
 
 class JobStore:
     def __init__(self, jobs_root: Path, retention_days: int):
@@ -567,17 +903,89 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
             raise HTTPException(status_code=404, detail="模板不存在。")
         return FileResponse(path, filename=template_data["filename"])
 
+    @app.get("/templates/{template_id}/html")
+    def template_html_download(request: Request, template_id: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.current_asset_path(template_id, "html")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="HTML 模板不存在。")
+        return FileResponse(path, filename=path.name, media_type="text/html")
+
+    @app.get("/templates/{template_id}/meta")
+    def template_meta_download(request: Request, template_id: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.current_asset_path(template_id, "meta")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="模板元数据不存在。")
+        return FileResponse(path, filename=path.name, media_type="application/json")
+
+    @app.get("/templates/{template_id}/preview", response_class=HTMLResponse)
+    def template_preview(request: Request, template_id: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.current_asset_path(template_id, "preview")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="预览不存在。")
+        return HTMLResponse(path.read_text(encoding="utf-8"))
+
     @app.get("/templates/{template_id}/history/{version_name}/download")
     def template_history_download(request: Request, template_id: str, version_name: str):
         redirect = require_web_session(request)
         if redirect:
             return redirect
         get_template_or_404(app.state.template_store, template_id)
-        history_dir = app.state.template_store.history_path(template_id).resolve()
-        path = (history_dir / version_name).resolve()
-        if not str(path).startswith(str(history_dir)) or not path.exists():
+        try:
+            path = app.state.template_store.history_asset_path(template_id, version_name, "source")
+        except FileNotFoundError:
             raise HTTPException(status_code=404, detail="历史模板不存在。")
-        return FileResponse(path, filename=version_name)
+        return FileResponse(path, filename=path.name)
+
+    @app.get("/templates/{template_id}/history/{version_name}/html")
+    def template_history_html_download(request: Request, template_id: str, version_name: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.history_asset_path(template_id, version_name, "html")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="历史 HTML 模板不存在。")
+        return FileResponse(path, filename=path.name, media_type="text/html")
+
+    @app.get("/templates/{template_id}/history/{version_name}/meta")
+    def template_history_meta_download(request: Request, template_id: str, version_name: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.history_asset_path(template_id, version_name, "meta")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="历史模板元数据不存在。")
+        return FileResponse(path, filename=path.name, media_type="application/json")
+
+    @app.get("/templates/{template_id}/history/{version_name}/preview", response_class=HTMLResponse)
+    def template_history_preview(request: Request, template_id: str, version_name: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            path = app.state.template_store.history_asset_path(template_id, version_name, "preview")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="历史预览不存在。")
+        return HTMLResponse(path.read_text(encoding="utf-8"))
 
     @app.post("/templates/{template_id}/upload")
     def template_upload(request: Request, template_id: str, file: UploadFile = File(...)):

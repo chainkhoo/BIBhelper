@@ -1,6 +1,7 @@
 # coding=utf-8
 from __future__ import annotations
 import copy
+import json
 import logging
 import os
 import platform
@@ -11,6 +12,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from html import escape
 from pathlib import Path
 from typing import Literal
 
@@ -46,7 +48,7 @@ class RunOptions:
 @dataclass
 class GeneratedArtifact:
     relative_path: str
-    kind: Literal["docx", "pdf", "overview_pdf", "zip"]
+    kind: Literal["docx", "pdf", "overview_pdf", "zip", "html"]
     customer_name: str | None
     plan_type: Literal["savings", "critical_illness"]
     source_filenames: list[str]
@@ -1497,6 +1499,59 @@ def replace_text_in_paragraph(paragraph, data):
                         run.text = ""
                     paragraph.runs[0].text = new_text
 
+
+def _load_template_metadata(template_path):
+    meta_path = Path(template_path).with_suffix(".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print_warn(f"⚠️ 模板元数据读取失败，已跳过 HTML 模板配置: {exc}")
+        return {}
+
+
+def resolve_html_template_path(template_path):
+    docx_template = Path(template_path)
+    html_template = docx_template.with_suffix(".html")
+    if not html_template.exists():
+        return None, {}
+    meta = _load_template_metadata(docx_template)
+    if meta.get("conversion_status") == "failed" or meta.get("fallback_to_docx"):
+        return None, meta
+    return html_template, meta
+
+
+def render_html_template(template_path, output_path, data):
+    template_file = Path(template_path)
+    if not template_file.exists():
+        print_warn(f"⚠️ HTML 模板不存在，已跳过 HTML 渲染: {template_file}")
+        return False
+    html_text = template_file.read_text(encoding="utf-8")
+    for key, value in data.items():
+        html_text = html_text.replace(f"{{{key}}}", escape(_format_value(value), quote=True))
+    Path(output_path).write_text(html_text, encoding="utf-8")
+    print_success(f"✅ HTML 已生成: {output_path}")
+    return True
+
+
+def convert_html_to_pdf_using_weasyprint(html_path, pdf_path):
+    try:
+        from weasyprint import HTML
+    except Exception as exc:
+        print_warn(f"⚠️ WeasyPrint 不可用，已回退到 DOCX 转 PDF: {exc}")
+        return False
+    try:
+        HTML(
+            filename=str(Path(html_path).resolve()),
+            base_url=str(Path(html_path).resolve().parent),
+        ).write_pdf(str(pdf_path))
+        return Path(pdf_path).exists()
+    except Exception as exc:
+        print_warn(f"⚠️ WeasyPrint HTML 转 PDF 失败: {exc}")
+        print_info("💡 请确认已安装 WeasyPrint 依赖。")
+        return False
+
 def generate_summary(template_path, output_path, data):
     if not Path(template_path).exists():
         print_error(f"❌ 模板文件不存在: {template_path}")
@@ -1523,7 +1578,7 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
     
     # 创建投保人姓名文件夹
     save_dir = Path(output_root or Path.cwd()) / name
-    save_dir.mkdir(exist_ok=True)
+    save_dir.mkdir(parents=True, exist_ok=True)
     print_info(f"📁 创建输出文件夹: {save_dir}")
     
     def _pick_number(keys):
@@ -1575,6 +1630,9 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
     
     # 生成Word文档路径
     final_docx_path = save_dir / output_name
+    html_template_path, html_meta = resolve_html_template_path(template_path)
+    final_html_path = save_dir / output_name.replace(".docx", ".html")
+    final_pdf_path = save_dir / output_name.replace(".docx", ".pdf")
     
     # 生成Word文档
     try:
@@ -1582,26 +1640,37 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
         if not success:
             print_error(f"❌ 生成 {plan_name} 总结书失败: 模板处理失败")
             return None, None, []
-        
+        generated_paths = [final_docx_path]
+
+        html_rendered = False
+        if html_template_path:
+            html_rendered = render_html_template(html_template_path, final_html_path, all_data)
+            if html_rendered:
+                generated_paths.append(final_html_path)
+            elif html_meta:
+                print_warn("⚠️ HTML 模板存在但渲染失败，已回退到 DOCX 路线。")
+
         # PDF转换
         if enable_pdf:
             print_info("正在转换为PDF...")
-            pdf_path = convert_to_pdf(str(final_docx_path))
-            if pdf_path:
-                # 将PDF移动到投保人文件夹
-                final_pdf_name = output_name.replace(".docx", ".pdf")
-                final_pdf_path = save_dir / final_pdf_name
-                import shutil
-                shutil.move(pdf_path, final_pdf_path)
-                print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
-                generated_paths = [final_docx_path, final_pdf_path]
-            else:
-                print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
-                print_info("💡 您可以手动打开Word文档并导出为PDF")
-                generated_paths = [final_docx_path]
+            pdf_created = False
+            if html_rendered:
+                pdf_created = convert_html_to_pdf_using_weasyprint(final_html_path, final_pdf_path)
+                if pdf_created:
+                    generated_paths.append(final_pdf_path)
+                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
+            if not pdf_created:
+                pdf_path = convert_to_pdf(str(final_docx_path))
+                if pdf_path:
+                    if Path(pdf_path).resolve() != final_pdf_path.resolve():
+                        shutil.move(pdf_path, final_pdf_path)
+                    generated_paths.append(final_pdf_path)
+                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
+                else:
+                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
+                    print_info("💡 您可以手动打开Word文档并导出为PDF")
         else:
             print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
-            generated_paths = [final_docx_path]
         
         return save_dir, final_docx_path.name, generated_paths
         
@@ -1892,6 +1961,8 @@ def _build_artifact(path, output_root, plan_type, customer_name, source_filename
         kind = "overview_pdf"
     elif path_obj.suffix.lower() == ".pdf":
         kind = "pdf"
+    elif path_obj.suffix.lower() == ".html":
+        kind = "html"
     else:
         kind = "docx"
     return GeneratedArtifact(

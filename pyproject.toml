@@ -13,12 +13,14 @@ dependencies = [
   "fastapi",
   "itsdangerous",
   "jinja2",
+  "mammoth",
   "pdfplumber",
   "pymupdf",
   "python-docx",
   "python-multipart",
   "requests",
   "uvicorn",
+  "weasyprint",
 ]
 
 [project.optional-dependencies]

@@ -21,7 +21,7 @@ BIBhelper 用于处理 AIA 建议书 PDF，并生成面向客户的总结书。
 - `tests/test_aia.py`
   核心逻辑和服务层自动化测试
 - `deploy/`
-  Dockerfile 和 `docker-compose.yml`
+  Dockerfile、`docker-compose.yml` 和 `docker-compose.ghcr.yml`
 
 ## 功能概览
 
@@ -108,10 +108,45 @@ uvicorn apps.service.app.main:app --host 0.0.0.0 --port 8000
 ## Docker 部署
 
 ```bash
-docker compose -f deploy/docker-compose.yml up --build
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-容器默认监听 `8000`，数据目录挂载到 `/data/bibhelper`。生产环境建议放在现有 Nginx 或 Caddy 后面，由反向代理处理 HTTPS、上传大小和超时。
+容器默认监听 `127.0.0.1:8000`，数据目录挂载到 `/data/bibhelper`。生产环境建议放在现有 Nginx 或 Caddy 后面，由反向代理处理 HTTPS、上传大小和超时。
+
+### 方案 B：服务器本地 build，但依赖层缓存
+
+当前 `deploy/Dockerfile` 已按“依赖层”和“代码层”拆分：
+
+- `requirements.txt` 先安装第三方依赖
+- 业务代码后复制
+- 最后执行 `pip install --no-deps .`
+
+这样在 `requirements.txt` 不变时，修改页面、路由或核心逻辑只会重跑代码层，`pip install -r requirements.txt` 会直接命中 Docker 缓存。
+
+常用命令：
+
+```bash
+cd /opt/bibhelper
+git pull origin main
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+### 方案 C：GitHub Actions 构建镜像，服务器只 pull
+
+仓库已包含 GHCR 发布工作流：
+
+- 文件：`.github/workflows/docker-publish.yml`
+- 触发：推送到 `main` 或推送 `v*` tag
+- 镜像地址：`ghcr.io/chainkhoo/bibhelper:latest`
+
+服务器端可直接使用：
+
+```bash
+docker compose -f deploy/docker-compose.ghcr.yml pull
+docker compose -f deploy/docker-compose.ghcr.yml up -d
+```
+
+如果你已经在 1Panel 上使用编排部署，建议后续切到 `deploy/docker-compose.ghcr.yml`，这样服务器更新时只需要拉镜像，不再本地构建。
 
 ## 运行测试
 

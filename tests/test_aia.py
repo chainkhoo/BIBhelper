@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from docx import Document
 
 
 os.environ.setdefault("AIA_SKIP_VENV", "1")
@@ -19,6 +20,7 @@ os.environ.setdefault("BIBHELPER_DATA_ROOT", str(ROOT / ".test-service-data"))
 import aia
 from apps.service.app.main import ServiceConfig, create_app
 from bib_core import GeneratedArtifact, RunResult
+from bib_core import core as core_module
 
 
 class FakePage:
@@ -91,6 +93,58 @@ class ScopeRegressionTests(unittest.TestCase):
         self.assertEqual(set(aia.PARSE_FUNCTIONS), {"savings", "critical_illness"})
         self.assertEqual(aia.classify_by_payment_term_and_age(5, 10, "儿童方案.pdf"), "savings")
         self.assertIsNone(aia.classify_by_payment_term_and_age(None, 10, "教育金方案.pdf"))
+
+
+class HtmlRenderingTests(unittest.TestCase):
+    def test_create_output_prefers_html_and_weasyprint_pdf(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            template_docx = temp_root / "template_savings_standalone.docx"
+            template_html = temp_root / "template_savings_standalone.html"
+            source_pdf = temp_root / "plan.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+
+            document = Document()
+            document.add_paragraph("客户：{name}")
+            document.add_paragraph("年龄：{age}")
+            document.save(template_docx)
+
+            template_html.write_text(
+                "<!doctype html><html><body><p>客户：{name}</p><p>年龄：{age}</p></body></html>",
+                encoding="utf-8",
+            )
+
+            def fake_generate_summary(template_path, output_path, data):
+                generated = Document()
+                generated.add_paragraph(f"客户：{data['name']}")
+                generated.save(output_path)
+                return True
+
+            def fake_html_to_pdf(html_path, pdf_path):
+                Path(pdf_path).write_bytes(b"%PDF-1.4\nhtml-pdf")
+                return True
+
+            with mock.patch.object(core_module, "generate_summary", side_effect=fake_generate_summary):
+                with mock.patch.object(core_module, "convert_html_to_pdf_using_weasyprint", side_effect=fake_html_to_pdf) as html_pdf_mock:
+                    with mock.patch.object(core_module, "convert_to_pdf") as docx_pdf_mock:
+                        save_dir, summary_name, generated_paths = core_module.create_output_directory_and_save_files(
+                            {"name": "Mary Jane", "age": 31},
+                            "储蓄险",
+                            "single",
+                            [str(source_pdf)],
+                            True,
+                            str(template_docx),
+                            output_root=temp_root / "output",
+                        )
+
+            self.assertIsNotNone(save_dir)
+            self.assertTrue(summary_name.endswith(".docx"))
+            suffixes = {Path(path).suffix for path in generated_paths}
+            self.assertEqual(suffixes, {".docx", ".html", ".pdf"})
+            rendered_html = next(Path(path) for path in generated_paths if Path(path).suffix == ".html")
+            self.assertIn("Mary Jane", rendered_html.read_text(encoding="utf-8"))
+            html_pdf_mock.assert_called_once()
+            docx_pdf_mock.assert_not_called()
 
 
 class ServiceTests(unittest.TestCase):
@@ -180,6 +234,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200)
         self.assertEqual(status_response.json()["status"], "completed")
         self.assertEqual(status_response.json()["result_filename"], "Mary Jane保险总结书.zip")
+        self.assertTrue(status_response.json()["created_at"].endswith("+08:00"))
+        self.assertTrue(status_response.json()["expires_at"].endswith("+08:00"))
 
         download_response = self.client.get(
             f"/api/v1/jobs/{job_id}/download",
@@ -238,30 +294,59 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("模板管理", response.text)
         self.assertIn("储蓄险单独总结书模板", response.text)
         self.assertTrue(self.app.state.template_store.current_path("savings_single").exists())
+        self.assertIn("转换状态", response.text)
+        self.assertTrue(self.app.state.template_store.current_html_path("savings_single").exists())
+        self.assertTrue(self.app.state.template_store.current_meta_path("savings_single").exists())
+        self.assertTrue(self.app.state.template_store.current_preview_path("savings_single").exists())
 
     def test_template_upload_and_restore(self):
         self.login()
         template_store = self.app.state.template_store
         current_path = template_store.current_path("savings_single")
         original_bytes = current_path.read_bytes()
+        original_html = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
+
+        replacement_dir = Path(self.tempdir.name) / "replacement"
+        replacement_dir.mkdir(parents=True, exist_ok=True)
+        replacement_path = replacement_dir / "template_savings_standalone.docx"
+        document = Document()
+        document.add_paragraph("客户：{name}")
+        document.add_paragraph("年龄：{age}")
+        document.save(replacement_path)
 
         upload_response = self.client.post(
             "/templates/savings_single/upload",
             files={
                 "file": (
                     "template_savings_standalone.docx",
-                    b"new-template-content",
+                    replacement_path.read_bytes(),
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
             },
             follow_redirects=False,
         )
         self.assertEqual(upload_response.status_code, 303)
-        self.assertEqual(current_path.read_bytes(), b"new-template-content")
+        self.assertEqual(current_path.read_bytes(), replacement_path.read_bytes())
+
+        html_text = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
+        preview_text = template_store.current_preview_path("savings_single").read_text(encoding="utf-8")
+        meta = template_store.get_template("savings_single")["current_meta"]
+        self.assertIn("{name}", html_text)
+        self.assertIn("示例客户", preview_text)
+        self.assertEqual(meta["conversion_status"], "success")
+        self.assertIn("{name}", meta["placeholder_summary"])
 
         template_data = template_store.get_template("savings_single")
         self.assertGreaterEqual(len(template_data["history"]), 1)
         version_name = template_data["history"][0]["name"]
+
+        html_response = self.client.get("/templates/savings_single/html")
+        self.assertEqual(html_response.status_code, 200)
+        self.assertIn("{name}", html_response.text)
+
+        preview_response = self.client.get("/templates/savings_single/preview")
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertIn("示例客户", preview_response.text)
 
         restore_response = self.client.post(
             "/templates/savings_single/restore",
@@ -270,6 +355,10 @@ class ServiceTests(unittest.TestCase):
         )
         self.assertEqual(restore_response.status_code, 303)
         self.assertEqual(current_path.read_bytes(), original_bytes)
+        self.assertEqual(
+            template_store.current_html_path("savings_single").read_text(encoding="utf-8"),
+            original_html,
+        )
 
 
 if __name__ == "__main__":

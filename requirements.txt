@@ -1,0 +1,13 @@
+colorama
+docx2pdf
+fastapi
+itsdangerous
+jinja2
+mammoth
+pdfplumber
+pymupdf
+python-docx
+python-multipart
+requests
+uvicorn
+weasyprint

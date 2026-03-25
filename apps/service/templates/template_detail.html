@@ -17,8 +17,39 @@
   {% else %}
   <p>当前模板缺失。</p>
   {% endif %}
+  <p>
+    <strong>转换状态:</strong>
+    <span class="status status-{{ template_data.conversion_status }}">{{ template_data.conversion_status }}</span>
+  </p>
+  {% if template_data.current_meta.conversion_engine %}
+  <p><strong>转换引擎:</strong> {{ template_data.current_meta.conversion_engine }}</p>
+  {% endif %}
+  {% if template_data.placeholder_summary %}
+  <p><strong>占位符:</strong></p>
+  <div class="placeholder-list">
+    {% for placeholder in template_data.placeholder_summary %}
+    <code>{{ placeholder }}</code>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if template_data.warnings %}
+  <div class="warning-block">
+    {% for warning in template_data.warnings %}
+    <p class="warning">{{ warning }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
   <div class="button-row">
     <a class="button-link" href="/templates/{{ template_data.id }}/download">下载当前模板</a>
+    {% if template_data.current_html %}
+    <a class="button-link secondary" href="/templates/{{ template_data.id }}/html">下载当前 HTML</a>
+    {% endif %}
+    {% if template_data.meta_file %}
+    <a class="button-link secondary" href="/templates/{{ template_data.id }}/meta">下载元数据</a>
+    {% endif %}
+    {% if template_data.preview %}
+    <a class="button-link secondary" href="/templates/{{ template_data.id }}/preview" target="_blank" rel="noopener">查看预览</a>
+    {% endif %}
   </div>
 </section>
 
@@ -36,9 +67,10 @@
   <table class="jobs-table">
     <thead>
       <tr>
-        <th>文件名</th>
+        <th>版本</th>
         <th>保存时间</th>
-        <th>大小</th>
+        <th>主文件大小</th>
+        <th>转换状态</th>
         <th>操作</th>
       </tr>
     </thead>
@@ -47,15 +79,32 @@
       <tr>
         <td>{{ item.name }}</td>
         <td>{{ item.updated_at }}</td>
-        <td>{{ item.size }} bytes</td>
+        <td>{{ item.source.size }} bytes</td>
+        <td><span class="status status-{{ item.conversion_status }}">{{ item.conversion_status }}</span></td>
         <td>
           <div class="button-row">
             <a class="button-link secondary" href="/templates/{{ template_data.id }}/history/{{ item.name }}/download">下载</a>
+            {% if item.html %}
+            <a class="button-link secondary" href="/templates/{{ template_data.id }}/history/{{ item.name }}/html">HTML</a>
+            {% endif %}
+            {% if item.meta_file %}
+            <a class="button-link secondary" href="/templates/{{ template_data.id }}/history/{{ item.name }}/meta">元数据</a>
+            {% endif %}
+            {% if item.preview %}
+            <a class="button-link secondary" href="/templates/{{ template_data.id }}/history/{{ item.name }}/preview" target="_blank" rel="noopener">预览</a>
+            {% endif %}
             <form method="post" action="/templates/{{ template_data.id }}/restore" class="inline-form">
               <input type="hidden" name="version_name" value="{{ item.name }}">
               <button type="submit">恢复</button>
             </form>
           </div>
+          {% if item.placeholder_summary %}
+          <div class="placeholder-list compact">
+            {% for placeholder in item.placeholder_summary %}
+            <code>{{ placeholder }}</code>
+            {% endfor %}
+          </div>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

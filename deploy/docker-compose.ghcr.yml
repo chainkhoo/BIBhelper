@@ -1,9 +1,8 @@
 services:
   bibhelper:
     container_name: bibhelper
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    image: ghcr.io/chainkhoo/bibhelper:latest
+    pull_policy: always
     restart: unless-stopped
     environment:
       SHORTCUT_API_TOKEN: change-me-token

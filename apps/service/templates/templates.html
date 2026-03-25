@@ -20,10 +20,26 @@
       {% else %}
       <p>当前模板缺失。</p>
       {% endif %}
+      <p>
+        <strong>转换状态:</strong>
+        <span class="status status-{{ item.conversion_status }}">{{ item.conversion_status }}</span>
+      </p>
+      {% if item.current_html %}
+      <p><strong>HTML 文件:</strong> {{ item.current_html.name }}</p>
+      {% endif %}
+      {% if item.warnings %}
+      <p class="warning">{{ item.warnings[0] }}</p>
+      {% endif %}
       <p><strong>历史版本:</strong> {{ item.history | length }}</p>
       <div class="button-row">
         <a class="button-link" href="/templates/{{ item.id }}">查看详情</a>
         <a class="button-link secondary" href="/templates/{{ item.id }}/download">下载当前模板</a>
+        {% if item.current_html %}
+        <a class="button-link secondary" href="/templates/{{ item.id }}/html">下载 HTML</a>
+        {% endif %}
+        {% if item.preview %}
+        <a class="button-link secondary" href="/templates/{{ item.id }}/preview" target="_blank" rel="noopener">预览</a>
+        {% endif %}
       </div>
     </article>
     {% endfor %}

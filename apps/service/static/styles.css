@@ -169,6 +169,17 @@ input[type="file"] {
   color: var(--danger);
 }
 
+.status-warning {
+  background: #fef0c7;
+  color: #9a6700;
+}
+
+.status-not_applicable,
+.status-legacy {
+  background: #ece7dd;
+  color: #5f6c7b;
+}
+
 .muted {
   color: var(--muted);
   margin-left: 0.5rem;
@@ -189,6 +200,35 @@ input[type="file"] {
 
 .success {
   color: #136c43;
+}
+
+.warning {
+  color: #9a6700;
+}
+
+.warning-block {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #f0d39b;
+  border-radius: 12px;
+  background: #fff7e8;
+}
+
+.placeholder-list {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.placeholder-list code {
+  padding: 0.25rem 0.45rem;
+  border-radius: 999px;
+  background: #f0ebe1;
+}
+
+.placeholder-list.compact {
+  margin-top: 0.75rem;
 }
 
 .inline-form {
