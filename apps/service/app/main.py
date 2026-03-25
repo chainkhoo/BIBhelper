@@ -78,6 +78,141 @@ class ServiceConfig:
         return self.data_root / "jobs"
 
 
+TEMPLATE_DEFINITIONS = {
+    "savings_single": {
+        "filename": "template_savings_standalone.docx",
+        "label": "储蓄险单独总结书模板",
+        "description": "储蓄险单方案总结书模板。",
+    },
+    "savings_comparison": {
+        "filename": "template_savings_comparison.docx",
+        "label": "储蓄险对比总结书模板",
+        "description": "储蓄险双方案对比总结书模板。",
+    },
+    "savings_single_45": {
+        "filename": "template_savings_standalone_45.docx",
+        "label": "储蓄险 45 岁专用模板",
+        "description": "45 岁及以上客户的储蓄险单方案模板。",
+    },
+    "critical_illness_single": {
+        "filename": "template_ci_single.docx",
+        "label": "重疾险单独总结书模板",
+        "description": "重疾险单方案总结书模板。",
+    },
+    "savings_overlay": {
+        "filename": "aia_annotation_overlay.png",
+        "label": "储蓄险投资总览图叠加模板",
+        "description": "用于投资总览图标注叠加的 PNG 资源。",
+    },
+}
+
+
+class TemplateStore:
+    def __init__(self, root: Path, default_root: Path):
+        self.root = root
+        self.default_root = default_root
+        self.current_dir = self.root / "current"
+        self.history_dir = self.root / "history"
+        self.current_dir.mkdir(parents=True, exist_ok=True)
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+
+    def template_definition(self, template_id: str) -> dict:
+        template = TEMPLATE_DEFINITIONS.get(template_id)
+        if not template:
+            raise KeyError(template_id)
+        return template
+
+    def current_path(self, template_id: str) -> Path:
+        definition = self.template_definition(template_id)
+        return self.current_dir / definition["filename"]
+
+    def default_path(self, template_id: str) -> Path:
+        definition = self.template_definition(template_id)
+        return self.default_root / definition["filename"]
+
+    def history_path(self, template_id: str) -> Path:
+        path = self.history_dir / template_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def ensure_defaults(self):
+        for template_id in TEMPLATE_DEFINITIONS:
+            current_path = self.current_path(template_id)
+            if current_path.exists():
+                continue
+            source = self.default_path(template_id)
+            if source.exists():
+                shutil.copy2(source, current_path)
+
+    def _serialize_file(self, path: Path) -> dict:
+        stat = path.stat()
+        return {
+            "name": path.name,
+            "size": stat.st_size,
+            "updated_at": isoformat(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+        }
+
+    def list_templates(self) -> list[dict]:
+        items = []
+        for template_id, definition in TEMPLATE_DEFINITIONS.items():
+            current_path = self.current_path(template_id)
+            history_entries = [
+                self._serialize_file(path)
+                for path in sorted(self.history_path(template_id).glob("*"), key=lambda item: item.stat().st_mtime, reverse=True)
+                if path.is_file()
+            ]
+            items.append(
+                {
+                    "id": template_id,
+                    "filename": definition["filename"],
+                    "label": definition["label"],
+                    "description": definition["description"],
+                    "current": self._serialize_file(current_path) if current_path.exists() else None,
+                    "history": history_entries,
+                }
+            )
+        return items
+
+    def get_template(self, template_id: str) -> dict:
+        for item in self.list_templates():
+            if item["id"] == template_id:
+                return item
+        raise KeyError(template_id)
+
+    def _archive_current(self, template_id: str):
+        current_path = self.current_path(template_id)
+        if not current_path.exists():
+            return None
+        timestamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+        archived_name = f"{timestamp}__{current_path.name}"
+        archived_path = self.history_path(template_id) / archived_name
+        shutil.copy2(current_path, archived_path)
+        return archived_path
+
+    def save_upload(self, template_id: str, upload: UploadFile):
+        definition = self.template_definition(template_id)
+        filename = Path(upload.filename or "").name
+        expected_suffix = Path(definition["filename"]).suffix.lower()
+        if Path(filename).suffix.lower() != expected_suffix:
+            raise ValueError(f"模板文件必须是 {expected_suffix} 格式。")
+        content = upload.file.read()
+        if not content:
+            raise ValueError("上传文件不能为空。")
+        self._archive_current(template_id)
+        current_path = self.current_path(template_id)
+        tmp_path = current_path.with_suffix(current_path.suffix + ".tmp")
+        tmp_path.write_bytes(content)
+        tmp_path.replace(current_path)
+        return current_path
+
+    def restore_history(self, template_id: str, version_name: str):
+        history_file = (self.history_path(template_id) / version_name).resolve()
+        if not str(history_file).startswith(str(self.history_path(template_id).resolve())) or not history_file.exists():
+            raise FileNotFoundError(version_name)
+        self._archive_current(template_id)
+        shutil.copy2(history_file, self.current_path(template_id))
+        return self.current_path(template_id)
+
 class JobStore:
     def __init__(self, jobs_root: Path, retention_days: int):
         self.jobs_root = jobs_root
@@ -255,6 +390,7 @@ def process_job(app: FastAPI, job_id: str) -> dict:
     store: JobStore = app.state.job_store
     config: ServiceConfig = app.state.service_config
     processor: Callable[[RunOptions], RunResult] = app.state.processor
+    template_store: TemplateStore = app.state.template_store
     job_data = store.load_job(job_id)
     input_files = sorted(store.incoming_dir(job_id).glob("*.pdf"))
     result = processor(
@@ -264,6 +400,7 @@ def process_job(app: FastAPI, job_id: str) -> dict:
             output_root=store.output_dir(job_id),
             enable_pdf=config.enable_pdf,
             interactive=False,
+            template_root=template_store.current_dir,
         )
     )
     create_zip_from_output(store.output_dir(job_id), store.zip_path(job_id))
@@ -309,16 +446,26 @@ def resolve_output_file(base_dir: Path, relative_path: str) -> Path:
     return target
 
 
+def get_template_or_404(template_store: TemplateStore, template_id: str) -> dict:
+    try:
+        return template_store.get_template(template_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="模板不存在。")
+
+
 def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOptions], RunResult] | None = None) -> FastAPI:
     config = config or ServiceConfig.from_env()
     processor = processor or run_pipeline
     config.data_root.mkdir(parents=True, exist_ok=True)
     job_store = JobStore(config.jobs_root, config.job_retention_days)
+    template_store = TemplateStore(config.data_root / "templates", REPO_ROOT / "packages" / "bib_core" / "src" / "bib_core" / "resources")
+    template_store.ensure_defaults()
     cleanup_stop = threading.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         job_store.cleanup_expired()
+        template_store.ensure_defaults()
 
         def cleanup_loop():
             while not cleanup_stop.wait(3600):
@@ -344,6 +491,7 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
     templates = Jinja2Templates(directory=str(config.templates_dir))
     app.state.service_config = config
     app.state.job_store = job_store
+    app.state.template_store = template_store
     app.state.job_semaphore = threading.BoundedSemaphore(config.max_concurrent_jobs)
     app.state.processor = processor
 
@@ -377,6 +525,86 @@ def create_app(config: ServiceConfig | None = None, processor: Callable[[RunOpti
         if redirect:
             return redirect
         return templates.TemplateResponse(request, "upload.html", {"max_upload_files": config.max_upload_files})
+
+    @app.get("/templates", response_class=HTMLResponse)
+    def templates_page(request: Request):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        items = app.state.template_store.list_templates()
+        return templates.TemplateResponse(
+            request,
+            "templates.html",
+            {
+                "templates_data": items,
+                "message": request.query_params.get("message"),
+            },
+        )
+
+    @app.get("/templates/{template_id}", response_class=HTMLResponse)
+    def template_detail_page(request: Request, template_id: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        template_data = get_template_or_404(app.state.template_store, template_id)
+        return templates.TemplateResponse(
+            request,
+            "template_detail.html",
+            {
+                "template_data": template_data,
+                "message": request.query_params.get("message"),
+            },
+        )
+
+    @app.get("/templates/{template_id}/download")
+    def template_download(request: Request, template_id: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        template_data = get_template_or_404(app.state.template_store, template_id)
+        path = app.state.template_store.current_path(template_id)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="模板不存在。")
+        return FileResponse(path, filename=template_data["filename"])
+
+    @app.get("/templates/{template_id}/history/{version_name}/download")
+    def template_history_download(request: Request, template_id: str, version_name: str):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        history_dir = app.state.template_store.history_path(template_id).resolve()
+        path = (history_dir / version_name).resolve()
+        if not str(path).startswith(str(history_dir)) or not path.exists():
+            raise HTTPException(status_code=404, detail="历史模板不存在。")
+        return FileResponse(path, filename=version_name)
+
+    @app.post("/templates/{template_id}/upload")
+    def template_upload(request: Request, template_id: str, file: UploadFile = File(...)):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            app.state.template_store.save_upload(template_id, file)
+        except ValueError as exc:
+            return RedirectResponse(
+                url=f"/templates/{template_id}?message={str(exc)}",
+                status_code=303,
+            )
+        return RedirectResponse(url=f"/templates/{template_id}?message=模板已更新", status_code=303)
+
+    @app.post("/templates/{template_id}/restore")
+    def template_restore(request: Request, template_id: str, version_name: str = Form(...)):
+        redirect = require_web_session(request)
+        if redirect:
+            return redirect
+        get_template_or_404(app.state.template_store, template_id)
+        try:
+            app.state.template_store.restore_history(template_id, version_name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="历史模板不存在。")
+        return RedirectResponse(url=f"/templates/{template_id}?message=已恢复历史模板", status_code=303)
 
     @app.post("/upload")
     def upload_submit(request: Request, background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):

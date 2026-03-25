@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}模板管理 | BIBhelper{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-header">
+    <h1>模板管理</h1>
+  </div>
+  {% if message %}
+  <p class="success">{{ message }}</p>
+  {% endif %}
+  <div class="template-grid">
+    {% for item in templates_data %}
+    <article class="template-card">
+      <h2><a href="/templates/{{ item.id }}">{{ item.label }}</a></h2>
+      <p class="muted">{{ item.description }}</p>
+      <p><strong>当前文件:</strong> {{ item.filename }}</p>
+      {% if item.current %}
+      <p><strong>更新时间:</strong> {{ item.current.updated_at }}</p>
+      <p><strong>大小:</strong> {{ item.current.size }} bytes</p>
+      {% else %}
+      <p>当前模板缺失。</p>
+      {% endif %}
+      <p><strong>历史版本:</strong> {{ item.history | length }}</p>
+      <div class="button-row">
+        <a class="button-link" href="/templates/{{ item.id }}">查看详情</a>
+        <a class="button-link secondary" href="/templates/{{ item.id }}/download">下载当前模板</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

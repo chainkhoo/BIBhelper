@@ -231,6 +231,46 @@ class ServiceTests(unittest.TestCase):
         finally:
             self.app.state.job_semaphore.release()
 
+    def test_templates_page_lists_current_templates(self):
+        self.login()
+        response = self.client.get("/templates")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("模板管理", response.text)
+        self.assertIn("储蓄险单独总结书模板", response.text)
+        self.assertTrue(self.app.state.template_store.current_path("savings_single").exists())
+
+    def test_template_upload_and_restore(self):
+        self.login()
+        template_store = self.app.state.template_store
+        current_path = template_store.current_path("savings_single")
+        original_bytes = current_path.read_bytes()
+
+        upload_response = self.client.post(
+            "/templates/savings_single/upload",
+            files={
+                "file": (
+                    "template_savings_standalone.docx",
+                    b"new-template-content",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(upload_response.status_code, 303)
+        self.assertEqual(current_path.read_bytes(), b"new-template-content")
+
+        template_data = template_store.get_template("savings_single")
+        self.assertGreaterEqual(len(template_data["history"]), 1)
+        version_name = template_data["history"][0]["name"]
+
+        restore_response = self.client.post(
+            "/templates/savings_single/restore",
+            data={"version_name": version_name},
+            follow_redirects=False,
+        )
+        self.assertEqual(restore_response.status_code, 303)
+        self.assertEqual(current_path.read_bytes(), original_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

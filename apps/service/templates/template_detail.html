@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}模板详情 | BIBhelper{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-header">
+    <h1>{{ template_data.label }}</h1>
+    <a class="button-link secondary" href="/templates">返回模板列表</a>
+  </div>
+  <p class="muted">{{ template_data.description }}</p>
+  {% if message %}
+  <p class="success">{{ message }}</p>
+  {% endif %}
+  <p><strong>当前文件:</strong> {{ template_data.filename }}</p>
+  {% if template_data.current %}
+  <p><strong>更新时间:</strong> {{ template_data.current.updated_at }}</p>
+  <p><strong>大小:</strong> {{ template_data.current.size }} bytes</p>
+  {% else %}
+  <p>当前模板缺失。</p>
+  {% endif %}
+  <div class="button-row">
+    <a class="button-link" href="/templates/{{ template_data.id }}/download">下载当前模板</a>
+  </div>
+</section>
+
+<section class="card">
+  <h2>替换当前模板</h2>
+  <form method="post" action="/templates/{{ template_data.id }}/upload" enctype="multipart/form-data" class="stack">
+    <input type="file" name="file" required>
+    <button type="submit">上传并替换</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>历史模板</h2>
+  {% if template_data.history %}
+  <table class="jobs-table">
+    <thead>
+      <tr>
+        <th>文件名</th>
+        <th>保存时间</th>
+        <th>大小</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in template_data.history %}
+      <tr>
+        <td>{{ item.name }}</td>
+        <td>{{ item.updated_at }}</td>
+        <td>{{ item.size }} bytes</td>
+        <td>
+          <div class="button-row">
+            <a class="button-link secondary" href="/templates/{{ template_data.id }}/history/{{ item.name }}/download">下载</a>
+            <form method="post" action="/templates/{{ template_data.id }}/restore" class="inline-form">
+              <input type="hidden" name="version_name" value="{{ item.name }}">
+              <button type="submit">恢复</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>暂无历史模板。</p>
+  {% endif %}
+</section>
+{% endblock %}

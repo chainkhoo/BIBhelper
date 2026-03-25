@@ -1,5 +1,6 @@
 # coding=utf-8
 from __future__ import annotations
+import copy
 import logging
 import os
 import platform
@@ -23,7 +24,8 @@ init(autoreset=True)
 
 SYSTEM = platform.system()
 FILE_METADATA = {}
-RESOURCE_DIR = Path(__file__).resolve().parent / "resources"
+DEFAULT_RESOURCE_DIR = Path(__file__).resolve().parent / "resources"
+RESOURCE_DIR = DEFAULT_RESOURCE_DIR
 
 
 class PipelineError(RuntimeError):
@@ -202,22 +204,25 @@ def check_pdf_conversion_tools():
 # ==============================================================================
 # SECTION 1: 全局配置 (新增)
 # ==============================================================================
-PLAN_CONFIG = {
-    'savings': {
-        'name': '储蓄险',
-        'templates': {
-            'single': str(RESOURCE_DIR / 'template_savings_standalone.docx'),
-            'comparison': str(RESOURCE_DIR / 'template_savings_comparison.docx')
-        }
-    },
-    'critical_illness': {
-        'name': '重疾险',
-        'templates': {
-            'single': str(RESOURCE_DIR / 'template_ci_single.docx')
+def _build_plan_config(resource_dir):
+    return {
+        'savings': {
+            'name': '储蓄险',
+            'templates': {
+                'single': str(resource_dir / 'template_savings_standalone.docx'),
+                'comparison': str(resource_dir / 'template_savings_comparison.docx')
+            }
+        },
+        'critical_illness': {
+            'name': '重疾险',
+            'templates': {
+                'single': str(resource_dir / 'template_ci_single.docx')
+            }
         }
     }
-}
 
+
+PLAN_CONFIG = _build_plan_config(RESOURCE_DIR)
 ANNOTATION_OVERLAY_PATH = RESOURCE_DIR / "aia_annotation_overlay.png"
 DETAIL_SECTION_KEYWORDS = ["详细说明", "詳細說明"]
 OVERLAY_SETTINGS = {
@@ -230,6 +235,17 @@ OVERLAY_SETTINGS = {
     'savings': {},
 }
 _OVERLAY_DIMENSIONS = None
+
+
+def _apply_template_root(template_root=None):
+    global RESOURCE_DIR
+    global PLAN_CONFIG
+    global ANNOTATION_OVERLAY_PATH
+    global _OVERLAY_DIMENSIONS
+    RESOURCE_DIR = Path(template_root).resolve() if template_root else DEFAULT_RESOURCE_DIR
+    PLAN_CONFIG = _build_plan_config(RESOURCE_DIR)
+    ANNOTATION_OVERLAY_PATH = RESOURCE_DIR / "aia_annotation_overlay.png"
+    _OVERLAY_DIMENSIONS = None
 
 # ==============================================================================
 # SECTION 2: 文件扫描与任务决策 (核心重构)
@@ -2109,30 +2125,45 @@ def execute_all_tasks(tasks, file_metadata_context=None, output_root=None, enabl
     return all_artifacts, warnings
 
 def run_pipeline(options: RunOptions) -> RunResult:
-    input_files = _normalize_input_files(options.input_files)
-    options.workspace_dir.mkdir(parents=True, exist_ok=True)
-    options.output_root.mkdir(parents=True, exist_ok=True)
-    classified_pdfs, file_metadata = scan_and_classify_pdfs(input_files=input_files)
-    validate_single_customer(file_metadata)
-    tasks = determine_tasks(classified_pdfs, file_metadata, interactive=options.interactive)
-    artifacts, warnings = execute_all_tasks(
-        tasks,
-        file_metadata_context=file_metadata,
-        output_root=options.output_root,
-        enable_pdf=options.enable_pdf,
-        usd_cny_override=options.usd_cny_override,
-    )
-    classified_summary = {
-        plan_type: [Path(file_path).name for file_path in files]
-        for plan_type, files in classified_pdfs.items()
-    }
-    return RunResult(
-        job_id=None,
-        classified=classified_summary,
-        tasks=tasks,
-        artifacts=artifacts,
-        warnings=warnings,
-    )
+    global RESOURCE_DIR
+    global PLAN_CONFIG
+    global ANNOTATION_OVERLAY_PATH
+    global _OVERLAY_DIMENSIONS
+    previous_resource_dir = RESOURCE_DIR
+    previous_plan_config = copy.deepcopy(PLAN_CONFIG)
+    previous_overlay_path = ANNOTATION_OVERLAY_PATH
+    previous_overlay_dimensions = _OVERLAY_DIMENSIONS
+    _apply_template_root(options.template_root)
+    try:
+        input_files = _normalize_input_files(options.input_files)
+        options.workspace_dir.mkdir(parents=True, exist_ok=True)
+        options.output_root.mkdir(parents=True, exist_ok=True)
+        classified_pdfs, file_metadata = scan_and_classify_pdfs(input_files=input_files)
+        validate_single_customer(file_metadata)
+        tasks = determine_tasks(classified_pdfs, file_metadata, interactive=options.interactive)
+        artifacts, warnings = execute_all_tasks(
+            tasks,
+            file_metadata_context=file_metadata,
+            output_root=options.output_root,
+            enable_pdf=options.enable_pdf,
+            usd_cny_override=options.usd_cny_override,
+        )
+        classified_summary = {
+            plan_type: [Path(file_path).name for file_path in files]
+            for plan_type, files in classified_pdfs.items()
+        }
+        return RunResult(
+            job_id=None,
+            classified=classified_summary,
+            tasks=tasks,
+            artifacts=artifacts,
+            warnings=warnings,
+        )
+    finally:
+        RESOURCE_DIR = previous_resource_dir
+        PLAN_CONFIG = previous_plan_config
+        ANNOTATION_OVERLAY_PATH = previous_overlay_path
+        _OVERLAY_DIMENSIONS = previous_overlay_dimensions
 
 
 def main():

@@ -35,6 +35,13 @@ button,
   padding: 0.7rem 1rem;
   font: inherit;
   cursor: pointer;
+  display: inline-block;
+}
+
+.button-link.secondary,
+button.secondary {
+  background: #e6eceb;
+  color: var(--ink);
 }
 
 input[type="password"],
@@ -119,6 +126,26 @@ input[type="file"] {
   padding-left: 1.25rem;
 }
 
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.template-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  background: #fff;
+}
+
+.button-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .status {
   display: inline-block;
   padding: 0.2rem 0.55rem;
@@ -158,6 +185,10 @@ input[type="file"] {
 
 .error {
   color: var(--danger);
+}
+
+.success {
+  color: #136c43;
 }
 
 .inline-form {
