@@ -126,7 +126,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 - `jobs/`
 - `templates/current/`
 - `templates/history/`
-- 模板 HTML / 预览 / 元数据
+
+当前线上生产链路固定为 `DOCX -> PDF`。仓库里保留了底层 `HTML -> PDF` 处理能力，用于后续继续修整 HTML 打印样式，但默认不会参与线上总结书生成，也不会在模板管理中自动生成 HTML/预览文件。
 
 ### 方案 B：服务器本地 build，但依赖层缓存
 

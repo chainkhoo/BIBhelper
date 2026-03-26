@@ -7,7 +7,6 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 from docx import Document
-from docx.shared import Pt
 
 
 os.environ.setdefault("AIA_SKIP_VENV", "1")
@@ -97,11 +96,10 @@ class ScopeRegressionTests(unittest.TestCase):
 
 
 class HtmlRenderingTests(unittest.TestCase):
-    def test_create_output_prefers_html_and_weasyprint_pdf(self):
+    def test_create_output_uses_docx_pdf_pipeline(self):
         with tempfile.TemporaryDirectory() as tempdir:
             temp_root = Path(tempdir)
             template_docx = temp_root / "template_savings_standalone.docx"
-            template_html = temp_root / "template_savings_standalone.html"
             source_pdf = temp_root / "plan.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
 
@@ -110,24 +108,19 @@ class HtmlRenderingTests(unittest.TestCase):
             document.add_paragraph("年龄：{age}")
             document.save(template_docx)
 
-            template_html.write_text(
-                "<!doctype html><html><body><p>客户：{name}</p><p>年龄：{age}</p></body></html>",
-                encoding="utf-8",
-            )
-
             def fake_generate_summary(template_path, output_path, data):
                 generated = Document()
                 generated.add_paragraph(f"客户：{data['name']}")
                 generated.save(output_path)
                 return True
 
-            def fake_html_to_pdf(html_path, pdf_path):
-                Path(pdf_path).write_bytes(b"%PDF-1.4\nhtml-pdf")
-                return True
+            generated_pdf = temp_root / "generated.pdf"
+            generated_pdf.write_bytes(b"%PDF-1.4\ndocx-pdf")
 
             with mock.patch.object(core_module, "generate_summary", side_effect=fake_generate_summary):
-                with mock.patch.object(core_module, "convert_html_to_pdf_using_weasyprint", side_effect=fake_html_to_pdf) as html_pdf_mock:
+                with mock.patch.object(core_module, "convert_html_to_pdf_using_weasyprint") as html_pdf_mock:
                     with mock.patch.object(core_module, "convert_to_pdf") as docx_pdf_mock:
+                        docx_pdf_mock.return_value = str(generated_pdf)
                         save_dir, summary_name, generated_paths = core_module.create_output_directory_and_save_files(
                             {"name": "Mary Jane", "age": 31},
                             "储蓄险",
@@ -141,49 +134,9 @@ class HtmlRenderingTests(unittest.TestCase):
             self.assertIsNotNone(save_dir)
             self.assertTrue(summary_name.endswith(".docx"))
             suffixes = {Path(path).suffix for path in generated_paths}
-            self.assertEqual(suffixes, {".docx", ".html", ".pdf"})
-            rendered_html = next(Path(path) for path in generated_paths if Path(path).suffix == ".html")
-            self.assertIn("Mary Jane", rendered_html.read_text(encoding="utf-8"))
-            html_pdf_mock.assert_called_once()
-            docx_pdf_mock.assert_not_called()
-
-    def test_template_html_preserves_docx_default_font_and_layout_css(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-            data_root = Path(tempdir)
-            config = ServiceConfig(
-                data_root=data_root,
-                job_retention_days=7,
-                max_upload_files=5,
-                max_upload_bytes=50 * 1024 * 1024,
-                max_concurrent_jobs=1,
-                shortcut_api_token="token-123",
-                web_admin_password="pass-123",
-                session_secret="secret-123",
-                templates_dir=ROOT / "apps/service/templates",
-                static_dir=ROOT / "apps/service/static",
-                enable_pdf=False,
-            )
-            app = create_app(config=config, processor=ServiceTests.fake_processor)
-            template_store = app.state.template_store
-
-            replacement_path = data_root / "template_savings_standalone.docx"
-            document = Document()
-            document.styles["Normal"].font.name = "Times New Roman"
-            document.styles["Normal"].font.size = Pt(14)
-            document.add_paragraph("客户：{name}")
-            table = document.add_table(rows=1, cols=1)
-            table.cell(0, 0).text = "{age}"
-            document.save(replacement_path)
-
-            with replacement_path.open("rb") as handle:
-                upload = type("Upload", (), {"filename": replacement_path.name, "file": handle})()
-                template_store.save_upload("savings_single", upload)
-
-            html_text = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
-            self.assertIn('font-family: "Times New Roman"', html_text)
-            self.assertIn("font-size: 14pt", html_text)
-            self.assertIn("text-align: center", html_text)
-            self.assertIn("max-width: 100%", html_text)
+            self.assertEqual(suffixes, {".docx", ".pdf"})
+            html_pdf_mock.assert_not_called()
+            docx_pdf_mock.assert_called_once()
 
 
 class ServiceTests(unittest.TestCase):
@@ -333,17 +286,13 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("模板管理", response.text)
         self.assertIn("储蓄险单独总结书模板", response.text)
         self.assertTrue(self.app.state.template_store.current_path("savings_single").exists())
-        self.assertIn("转换状态", response.text)
-        self.assertTrue(self.app.state.template_store.current_html_path("savings_single").exists())
-        self.assertTrue(self.app.state.template_store.current_meta_path("savings_single").exists())
-        self.assertTrue(self.app.state.template_store.current_preview_path("savings_single").exists())
+        self.assertNotIn("转换状态", response.text)
 
     def test_template_upload_and_restore(self):
         self.login()
         template_store = self.app.state.template_store
         current_path = template_store.current_path("savings_single")
         original_bytes = current_path.read_bytes()
-        original_html = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
 
         replacement_dir = Path(self.tempdir.name) / "replacement"
         replacement_dir.mkdir(parents=True, exist_ok=True)
@@ -367,25 +316,14 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 303)
         self.assertEqual(current_path.read_bytes(), replacement_path.read_bytes())
 
-        html_text = template_store.current_html_path("savings_single").read_text(encoding="utf-8")
-        preview_text = template_store.current_preview_path("savings_single").read_text(encoding="utf-8")
-        meta = template_store.get_template("savings_single")["current_meta"]
-        self.assertIn("{name}", html_text)
-        self.assertIn("示例客户", preview_text)
-        self.assertEqual(meta["conversion_status"], "success")
-        self.assertIn("{name}", meta["placeholder_summary"])
-
         template_data = template_store.get_template("savings_single")
+        self.assertIn("{name}", template_data["placeholder_summary"])
+
         self.assertGreaterEqual(len(template_data["history"]), 1)
         version_name = template_data["history"][0]["name"]
 
         html_response = self.client.get("/templates/savings_single/html")
-        self.assertEqual(html_response.status_code, 200)
-        self.assertIn("{name}", html_response.text)
-
-        preview_response = self.client.get("/templates/savings_single/preview")
-        self.assertEqual(preview_response.status_code, 200)
-        self.assertIn("示例客户", preview_response.text)
+        self.assertEqual(html_response.status_code, 404)
 
         restore_response = self.client.post(
             "/templates/savings_single/restore",
@@ -394,10 +332,6 @@ class ServiceTests(unittest.TestCase):
         )
         self.assertEqual(restore_response.status_code, 303)
         self.assertEqual(current_path.read_bytes(), original_bytes)
-        self.assertEqual(
-            template_store.current_html_path("savings_single").read_text(encoding="utf-8"),
-            original_html,
-        )
 
 
 if __name__ == "__main__":

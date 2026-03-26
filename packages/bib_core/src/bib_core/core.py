@@ -1630,8 +1630,6 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
     
     # 生成Word文档路径
     final_docx_path = save_dir / output_name
-    html_template_path, html_meta = resolve_html_template_path(template_path)
-    final_html_path = save_dir / output_name.replace(".docx", ".html")
     final_pdf_path = save_dir / output_name.replace(".docx", ".pdf")
     
     # 生成Word文档
@@ -1642,33 +1640,18 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
             return None, None, []
         generated_paths = [final_docx_path]
 
-        html_rendered = False
-        if html_template_path:
-            html_rendered = render_html_template(html_template_path, final_html_path, all_data)
-            if html_rendered:
-                generated_paths.append(final_html_path)
-            elif html_meta:
-                print_warn("⚠️ HTML 模板存在但渲染失败，已回退到 DOCX 路线。")
-
         # PDF转换
         if enable_pdf:
             print_info("正在转换为PDF...")
-            pdf_created = False
-            if html_rendered:
-                pdf_created = convert_html_to_pdf_using_weasyprint(final_html_path, final_pdf_path)
-                if pdf_created:
-                    generated_paths.append(final_pdf_path)
-                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
-            if not pdf_created:
-                pdf_path = convert_to_pdf(str(final_docx_path))
-                if pdf_path:
-                    if Path(pdf_path).resolve() != final_pdf_path.resolve():
-                        shutil.move(pdf_path, final_pdf_path)
-                    generated_paths.append(final_pdf_path)
-                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
-                else:
-                    print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
-                    print_info("💡 您可以手动打开Word文档并导出为PDF")
+            pdf_path = convert_to_pdf(str(final_docx_path))
+            if pdf_path:
+                if Path(pdf_path).resolve() != final_pdf_path.resolve():
+                    shutil.move(pdf_path, final_pdf_path)
+                generated_paths.append(final_pdf_path)
+                print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name} & {final_pdf_path.name}")
+            else:
+                print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
+                print_info("💡 您可以手动打开Word文档并导出为PDF")
         else:
             print_success(f"✅ {plan_name} 总结书已完成: {final_docx_path.name}")
         
