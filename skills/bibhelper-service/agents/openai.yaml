@@ -1,0 +1,4 @@
+interface:
+  display_name: "BIBhelper Service"
+  short_description: "Maintain and operate the BIBhelper insurance-summary system"
+  default_prompt: "Work on the BIBhelper codebase, preserve the current savings and critical illness scope, keep production on the DOCX-to-PDF pipeline, and validate changes with tests and compose checks."
