@@ -545,6 +545,54 @@ def _extract_total_premium(text):
     
     return None
 
+
+def _extract_policy_total_premium(text):
+    """从说明摘要中提取总缴保费（USD）。
+
+    以“基本/基础计划-说明摘要”表格第二列为准。
+    总缴保费在缴费完成后保持不变，因此优先取表格最后一行第二列；
+    若最后一行异常，再回退到该列的最大值。
+    """
+
+    def _parse_amount(raw):
+        try:
+            return float(str(raw).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    end_pattern = re.compile(
+        r"(以上摘要[说說]明|[详詳][细細][说說]明|保障及利益摘要|現金提取[舉举]例|[现現]金提取[举舉]例|\n\s*\d+\s*[\.、])"
+    )
+    anchor_patterns = [
+        re.compile(r"(?:\d+\s*[\.、]\s*)?基(?:本|础|礎)\s*(?:计[划劃]|计划|計劃)?\s*[-－—–]?\s*[说說]明摘要"),
+        re.compile(r"(?:\d+\s*[\.、]\s*)?基(?:本|础|礎)\s*(?:计[划劃]|计划|計劃)?\s*[-－—–]?\s*說明摘要"),
+        re.compile(r"分[红紅]保[单單][销銷]售[说說]明文件"),
+    ]
+
+    candidate_sections = []
+    for anchor_pattern in anchor_patterns:
+        for match in anchor_pattern.finditer(text):
+            tail = text[match.end(): match.end() + 5000]
+            end_match = end_pattern.search(tail)
+            candidate_sections.append(tail[: end_match.start()] if end_match else tail)
+
+    header_pattern = re.compile(r"[缴繳](?:付)?保[费費][总總][额額]")
+    row_pattern = re.compile(r"(?m)^\s*(\d{1,3}(?:\s*[岁歲])?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\b")
+    for section in candidate_sections:
+        header_match = header_pattern.search(section)
+        if header_match:
+            section = section[header_match.end():]
+        rows = []
+        for _, amount_text in row_pattern.findall(section):
+            amount = _parse_amount(amount_text)
+            if amount and amount > 0:
+                rows.append(amount)
+        if not rows:
+            continue
+        return round(rows[-1], 2) if rows[-1] > 0 else round(max(rows), 2)
+
+    return None
+
 def classify_by_payment_term_and_age(payment_term, age, filename):
     """根据缴费年限和年龄分类保险类型"""
 
@@ -1066,9 +1114,12 @@ def parse_savings_plan(text, usd_cny, idx, shared_data=None):
                 payment_term_val = int(str(shared_data["payment_term"]))
             except ValueError:
                 payment_term_val = 0
-        premium_usd_all = round(premium_usd * payment_term_val, 2) if premium_usd and payment_term_val else 0
+        premium_usd_all = _extract_policy_total_premium(text)
+        if not premium_usd_all:
+            premium_usd_all = round(premium_usd * payment_term_val, 2) if premium_usd and payment_term_val else 0
         data["premium_usd_all"] = premium_usd_all
-        premium_cny_all_wan = (premium_usd_all * usd_cny) / 10000 if premium_usd_all > 0 and usd_cny > 0 else 0
+        premium_cny_all_wan = round((premium_usd_all * usd_cny) / 10000, 1) if premium_usd_all > 0 and usd_cny > 0 else 0
+        data["premium_cny_all_wan"] = premium_cny_all_wan
         if premium_cny_all_wan > 0 and withdraw_cny_total_wan > 0:
             data["withdraw_multiple"] = round(withdraw_cny_total_wan / premium_cny_all_wan, 1)
         else:
@@ -1322,9 +1373,11 @@ def parse_critical_illness_plan(text, usd_cny, idx, shared_data=None):
     
     # 计算总保费
     payment_term = int(shared_data.get("payment_term", 0)) if shared_data.get("payment_term") else 0
-    premium_usd_all = premium_usd * payment_term if premium_usd and payment_term else 0
-    if isinstance(premium_usd_all, float):
-        premium_usd_all = round(premium_usd_all, 2)
+    premium_usd_all = _extract_policy_total_premium(text)
+    if not premium_usd_all:
+        premium_usd_all = premium_usd * payment_term if premium_usd and payment_term else 0
+        if isinstance(premium_usd_all, float):
+            premium_usd_all = round(premium_usd_all, 2)
     premium_cny_all_wan = round((premium_usd_all * usd_cny) / 10000, 1) if premium_usd_all > 0 and usd_cny > 0 else 0  # 万元
     
     # 生成数据字典

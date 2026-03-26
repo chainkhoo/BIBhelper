@@ -139,6 +139,48 @@ class HtmlRenderingTests(unittest.TestCase):
             docx_pdf_mock.assert_called_once()
 
 
+class PremiumExtractionTests(unittest.TestCase):
+    SAMPLE_SUMMARY_TEXT = """
+受保人姓名: Mary Jane 女士 年龄: 45
+建议书摘要: 财富增值方案 (25年缴费)
+投保时年缴总保费：5,054
+保险业监管局(IA)保费征费：0
+分红保单销售说明文件
+3. 基本计划 - 说明摘要
+保单年度终结 缴付保费总额 退保发还金额 严重疾病赔偿 / 身故赔偿额
+1 5,054 0 0 0 225,000 0 225,000
+5 25,268 837 60 897 225,000 90 225,090
+10 50,535 5,423 180 5,603 225,000 270 225,270
+15 75,803 16,890 300 17,190 150,000 420 150,420
+20 101,070 38,282 540 38,822 150,000 720 150,720
+25 126,338 51,807 6,930 58,737 150,000 8,820 158,820
+30 126,338 57,176 106,050 163,226 150,000 129,375 279,375
+    65岁 126,338 65,318 147,945 213,263 150,000 173,385 323,385
+以上摘要说明：请参考说明部分。
+""".strip()
+
+    def test_extract_policy_total_premium_from_summary_table(self):
+        total = core_module._extract_policy_total_premium(self.SAMPLE_SUMMARY_TEXT)
+        self.assertEqual(total, 126338)
+
+    def test_parse_savings_plan_uses_extracted_total_premium(self):
+        data, shared_data = core_module.parse_savings_plan(self.SAMPLE_SUMMARY_TEXT, 7.2, 0, {})
+        self.assertEqual(shared_data["payment_term"], "25")
+        self.assertEqual(data["premium_usd_0"], 5054)
+        self.assertEqual(data["premium_usd_all"], 126338)
+        self.assertNotEqual(data["premium_usd_all"], 126350)
+        self.assertEqual(data["premium_cny_all_wan"], 91.0)
+
+    def test_parse_critical_illness_plan_uses_extracted_total_premium(self):
+        ci_text = self.SAMPLE_SUMMARY_TEXT.replace("财富增值方案", "爱伴航")
+        data, shared_data = core_module.parse_critical_illness_plan(ci_text, 7.2, 0, {})
+        self.assertEqual(shared_data["payment_term"], "25")
+        self.assertEqual(data["premium_usd_0"], 5054)
+        self.assertEqual(data["premium_usd_all"], 126338)
+        self.assertNotEqual(data["premium_usd_all"], 126350)
+        self.assertEqual(data["premium_cny_all_wan"], 91.0)
+
+
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
