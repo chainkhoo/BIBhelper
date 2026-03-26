@@ -62,20 +62,30 @@ For agent use, call the HTTP API directly. Do not automate the web login unless 
 The skill assumes these environment variables are available to the agent runtime:
 
 - `BIBHELPER_BASE_URL`
-  Example: `https://bib.obao.me`
+  Default: `https://bib.obao.me`
 - `BIBHELPER_API_TOKEN`
   The same bearer token used by Shortcut and API clients
 
 Preferred runtime behavior:
 
-1. Read `BIBHELPER_BASE_URL` and `BIBHELPER_API_TOKEN` from environment.
-2. Send requests to `POST /api/v1/process` with:
+1. Use `https://bib.obao.me` as the default base URL.
+2. If `BIBHELPER_BASE_URL` exists in environment, prefer that value.
+3. Read `BIBHELPER_API_TOKEN` from environment.
+4. If `BIBHELPER_API_TOKEN` is missing, ask the user for the token before making any API request.
+5. If the configured or default base URL does not respond or clearly appears wrong, ask the user for the correct service address before continuing.
+6. Send requests to `POST /api/v1/process` with:
 
 ```text
 Authorization: Bearer <BIBHELPER_API_TOKEN>
 ```
 
-3. Use `GET /api/v1/jobs/{job_id}` and `GET /api/v1/jobs/{job_id}/download` for follow-up.
+7. Use `GET /api/v1/jobs/{job_id}` and `GET /api/v1/jobs/{job_id}/download` for follow-up.
+
+If the current runtime cannot prompt the user interactively, stop and report exactly which value is missing or unreachable:
+
+- missing `BIBHELPER_API_TOKEN`
+- incorrect `BIBHELPER_BASE_URL`
+- unreachable service endpoint
 
 Never store real tokens inside:
 

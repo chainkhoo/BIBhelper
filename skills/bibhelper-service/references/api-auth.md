@@ -18,6 +18,14 @@ export BIBHELPER_BASE_URL="https://bib.obao.me"
 export BIBHELPER_API_TOKEN="replace-with-real-token"
 ```
 
+## Default behavior
+
+- Default base URL is `https://bib.obao.me`
+- If `BIBHELPER_BASE_URL` is set, use the environment value instead
+- If `BIBHELPER_API_TOKEN` is missing, ask the user for it before making API calls
+- If the default or configured base URL cannot be reached, ask the user for the correct address before continuing
+- If the runtime cannot ask the user, stop and return a clear configuration error
+
 ## Request pattern
 
 ### Process PDFs
@@ -61,6 +69,17 @@ Do not place the real token in:
 - `skills/bibhelper-service/`
 - tracked YAML/TOML/JSON config
 - prompt examples committed to Git
+
+## Minimal agent decision flow
+
+1. Set `base_url = env(BIBHELPER_BASE_URL)` if present, otherwise `https://bib.obao.me`
+2. Read `token = env(BIBHELPER_API_TOKEN)`
+3. If `token` is missing:
+   ask the user for the token
+4. Probe `GET {base_url}/healthz`
+5. If the probe fails or returns an unexpected result:
+   ask the user for the correct base URL
+6. Only after both values are confirmed, call the processing API
 
 ## Practical setups
 
