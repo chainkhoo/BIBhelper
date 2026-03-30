@@ -38,6 +38,7 @@ BIBhelper 用于处理 AIA 建议书 PDF，并生成面向客户的总结书。
 - Python 3.11+ 用于在线服务和 Docker 环境
 - Python 3.9+ 可运行当前本地 CLI 与测试
 - 如需自动转 PDF，建议安装 LibreOffice
+- Python 入口会自动读取 `deploy/.env.runtime` 和 `deploy/.env`
 - 若需实时汇率，运行环境需要可访问外网；失败时会回退到默认汇率
 
 ## CLI 使用
@@ -106,6 +107,22 @@ uvicorn apps.service.app.main:app --host 0.0.0.0 --port 8000
   服务端任务目录，默认 `/data/bibhelper`
 - `BIBHELPER_HOST_DATA_ROOT`
   Docker 宿主机持久化目录，默认 `/opt/bibhelper-data`
+- `EXCHANGE_RATE_API_KEY`
+  ExchangeRate-API 的 key，用于优先获取 USD/CNY 汇率
+- `EXCHANGERATE_HOST_API_KEY_PRIMARY`
+  exchangerate.host 主 key
+- `EXCHANGERATE_HOST_API_KEY_SECONDARY`
+  exchangerate.host 备用 key
+- `USD_CNY_RATE`
+  所有在线渠道都失败时使用的默认汇率，默认 `6.9`
+
+汇率获取顺序：
+
+- 已配置的 `EXCHANGE_RATE_API_KEY`
+- 已配置的 `EXCHANGERATE_HOST_API_KEY_PRIMARY`
+- 已配置的 `EXCHANGERATE_HOST_API_KEY_SECONDARY`
+- 无需 key 的公开渠道 Frankfurter
+- 若全部失败，回退到 `USD_CNY_RATE` 或默认值 `6.9`
 
 ## Docker 部署
 

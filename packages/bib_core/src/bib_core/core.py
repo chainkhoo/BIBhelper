@@ -22,12 +22,16 @@ import requests
 from docx import Document
 from docx2pdf import convert
 from colorama import Fore, Style, init
+from .env_loader import load_repo_env
+
 init(autoreset=True)
+load_repo_env()
 
 SYSTEM = platform.system()
 FILE_METADATA = {}
 DEFAULT_RESOURCE_DIR = Path(__file__).resolve().parent / "resources"
 RESOURCE_DIR = DEFAULT_RESOURCE_DIR
+DEFAULT_USD_CNY_RATE = 6.9
 
 
 class PipelineError(RuntimeError):
@@ -1433,26 +1437,82 @@ PARSE_FUNCTIONS = {
 # ==============================================================================
 # SECTION 4: 辅助函数 (汇率、Word生成、PDF转换等，基本保持不变)
 # ==============================================================================
-def get_usd_cny():
-    print_info("正在获取美元兑人民币汇率...")
-    apis = [
-        ("https://v6.exchangerate-api.com/v6/EXCHANGE_RATE_API_KEY_REMOVED/pair/USD/CNY", lambda d: d.get("result") == "success" and d.get("conversion_rate")),
-        ("http://api.exchangerate.host/live?access_key=EXCHANGERATE_HOST_API_KEY_PRIMARY_REMOVED&source=USD&currencies=CNY&format=1", lambda d: d.get("success") and d.get("quotes", {}).get("USDCNY")),
-        ("http://api.exchangerate.host/live?access_key=EXCHANGERATE_HOST_API_KEY_SECONDARY_REMOVED&source=USD&currencies=CNY&format=1", lambda d: d.get("success") and d.get("quotes", {}).get("USDCNY"))
+def _read_positive_float_from_env(env_name, default_value):
+    raw_value = str(os.environ.get(env_name, default_value)).strip()
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        print_warn(f"⚠️ 环境变量 {env_name}={raw_value!r} 无法解析为正数，将回退到 {default_value}。")
+        return float(default_value)
+    if value <= 0:
+        print_warn(f"⚠️ 环境变量 {env_name}={raw_value!r} 不是正数，将回退到 {default_value}。")
+        return float(default_value)
+    return value
+
+
+def _default_usd_cny_rate():
+    return _read_positive_float_from_env("USD_CNY_RATE", DEFAULT_USD_CNY_RATE)
+
+
+def _build_usd_cny_sources():
+    sources = []
+    exchange_rate_api_key = os.environ.get("EXCHANGE_RATE_API_KEY", "").strip()
+    if exchange_rate_api_key:
+        sources.append(
+            (
+                "ExchangeRate-API",
+                f"https://v6.exchangerate-api.com/v6/{exchange_rate_api_key}/pair/USD/CNY",
+                lambda data: data.get("conversion_rate") if data.get("result") == "success" else None,
+            )
+        )
+    exchangerate_host_keys = [
+        ("ExchangeRate.host(primary)", os.environ.get("EXCHANGERATE_HOST_API_KEY_PRIMARY", "").strip()),
+        ("ExchangeRate.host(secondary)", os.environ.get("EXCHANGERATE_HOST_API_KEY_SECONDARY", "").strip()),
     ]
-    for i, (url, extractor) in enumerate(apis, 1):
+    for name, api_key in exchangerate_host_keys:
+        if not api_key:
+            continue
+        sources.append(
+            (
+                name,
+                f"https://api.exchangerate.host/live?access_key={api_key}&source=USD&currencies=CNY&format=1",
+                lambda data: data.get("quotes", {}).get("USDCNY") if data.get("success") else None,
+            )
+        )
+    sources.append(
+        (
+            "Frankfurter(public)",
+            "https://api.frankfurter.dev/v2/rate/USD/CNY",
+            lambda data: data.get("rate"),
+        )
+    )
+    return sources
+
+
+def get_usd_cny():
+    default_rate = _default_usd_cny_rate()
+    print_info("正在获取美元兑人民币汇率...")
+    sources = _build_usd_cny_sources()
+    if len(sources) == 1:
+        print_warn("  - ⚠️ 未配置私有汇率 API key，将直接尝试公开渠道。")
+    for i, (name, url, extractor) in enumerate(sources, 1):
         try:
-            print_info(f"  - 正在尝试 API {i}...")
+            print_info(f"  - 正在尝试渠道 {i}: {name}...")
             resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
             data = resp.json()
             rate = extractor(data)
-            if rate:
-                print_success(f"  - ✅ API {i} 获取成功: {float(rate):.4f}")
-                return float(rate)
+            if rate is None:
+                raise ValueError("响应中未找到有效汇率")
+            rate = float(rate)
+            if rate <= 0:
+                raise ValueError("汇率不是正数")
+            print_success(f"  - ✅ {name} 获取成功: {rate:.4f}")
+            return rate
         except Exception as e:
-            print_warn(f"  - ⚠️ API {i} 尝试失败: {e}")
-    print_error("❌ 所有汇率API均获取失败，将使用默认值 7.25。")
-    return 7.25
+            print_warn(f"  - ⚠️ {name} 尝试失败: {e}")
+    print_error(f"❌ 所有汇率渠道均获取失败，将使用默认值 {default_rate:.2f}。")
+    return default_rate
 
 def extract_text(path):
     with pdfplumber.open(path) as pdf:
@@ -1670,7 +1730,7 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
         if coverage_wan is None:
             coverage_cny = _pick_number(['coverage_cny_wan', 'sum_assured_cny_wan', 'coverage_cny'])
             if coverage_cny is not None:
-                usd_cny = float(os.environ.get('USD_CNY_RATE', '7.2'))
+                usd_cny = _default_usd_cny_rate()
                 coverage_wan = coverage_cny / usd_cny
         if coverage_wan is not None and coverage_wan > 1000:
             coverage_wan = coverage_wan / 10000.0

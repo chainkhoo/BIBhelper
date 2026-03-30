@@ -21,6 +21,7 @@ import aia
 from apps.service.app.main import ServiceConfig, create_app
 from bib_core import GeneratedArtifact, RunResult
 from bib_core import core as core_module
+import bib_core.env_loader as env_loader_module
 
 
 class FakePage:
@@ -40,6 +41,19 @@ class FakePdf:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self._status_code = status_code
+
+    def raise_for_status(self):
+        if self._status_code >= 400:
+            raise RuntimeError(f"http {self._status_code}")
+
+    def json(self):
+        return self._payload
 
 
 class NameExtractionTests(unittest.TestCase):
@@ -179,6 +193,86 @@ class PremiumExtractionTests(unittest.TestCase):
         self.assertEqual(data["premium_usd_all"], 126338)
         self.assertNotEqual(data["premium_usd_all"], 126350)
         self.assertEqual(data["premium_cny_all_wan"], 91.0)
+
+
+class EnvLoaderTests(unittest.TestCase):
+    def test_load_repo_env_prefers_process_env_then_deploy_env(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo_root = Path(tempdir)
+            deploy_dir = repo_root / "deploy"
+            deploy_dir.mkdir(parents=True, exist_ok=True)
+            (deploy_dir / ".env.runtime").write_text(
+                "USD_CNY_RATE=6.8\nEXCHANGERATE_HOST_API_KEY_PRIMARY=runtime-key\n",
+                encoding="utf-8",
+            )
+            (deploy_dir / ".env").write_text(
+                "USD_CNY_RATE=6.7\nEXCHANGE_RATE_API_KEY=env-key\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"USD_CNY_RATE": "6.9"}, clear=True):
+                loaded = env_loader_module.load_repo_env(repo_root)
+                self.assertEqual(
+                    [path.resolve() for path in loaded],
+                    [(deploy_dir / ".env.runtime").resolve(), (deploy_dir / ".env").resolve()],
+                )
+                self.assertEqual(os.environ["USD_CNY_RATE"], "6.9")
+                self.assertEqual(os.environ["EXCHANGERATE_HOST_API_KEY_PRIMARY"], "runtime-key")
+                self.assertEqual(os.environ["EXCHANGE_RATE_API_KEY"], "env-key")
+
+
+class ExchangeRateTests(unittest.TestCase):
+    def test_get_usd_cny_uses_public_channel_when_private_keys_missing(self):
+        expected_url = "https://api.frankfurter.dev/v2/rate/USD/CNY"
+
+        def fake_get(url, timeout):
+            self.assertEqual(url, expected_url)
+            self.assertEqual(timeout, 5)
+            return FakeResponse({"rate": 6.88})
+
+        with mock.patch.dict(os.environ, {"USD_CNY_RATE": "6.9"}, clear=True):
+            with mock.patch.object(core_module.requests, "get", side_effect=fake_get) as get_mock:
+                rate = core_module.get_usd_cny()
+
+        self.assertEqual(rate, 6.88)
+        self.assertEqual(get_mock.call_count, 1)
+
+    def test_get_usd_cny_falls_back_to_public_channel_after_private_api_failure(self):
+        urls = []
+
+        def fake_get(url, timeout):
+            urls.append(url)
+            self.assertEqual(timeout, 5)
+            if "v6.exchangerate-api.com" in url:
+                raise RuntimeError("boom")
+            return FakeResponse({"rate": 6.91})
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EXCHANGE_RATE_API_KEY": "test-key",
+                "USD_CNY_RATE": "6.9",
+            },
+            clear=True,
+        ):
+            with mock.patch.object(core_module.requests, "get", side_effect=fake_get):
+                rate = core_module.get_usd_cny()
+
+        self.assertEqual(rate, 6.91)
+        self.assertEqual(
+            urls,
+            [
+                "https://v6.exchangerate-api.com/v6/test-key/pair/USD/CNY",
+                "https://api.frankfurter.dev/v2/rate/USD/CNY",
+            ],
+        )
+
+    def test_get_usd_cny_uses_6_point_9_default_when_all_channels_fail(self):
+        with mock.patch.dict(os.environ, {"USD_CNY_RATE": "6.9"}, clear=True):
+            with mock.patch.object(core_module.requests, "get", side_effect=RuntimeError("timeout")):
+                rate = core_module.get_usd_cny()
+
+        self.assertEqual(rate, 6.9)
 
 
 class ServiceTests(unittest.TestCase):
