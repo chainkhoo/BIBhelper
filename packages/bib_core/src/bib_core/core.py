@@ -2000,7 +2000,7 @@ def _export_page_with_overlay(source_pdf, page_index, output_pdf_path, overlay_c
         target_rect = _calculate_overlay_rect(page.rect, overlay_size, overlay_cfg)
         page.insert_image(target_rect, filename=str(ANNOTATION_OVERLAY_PATH),
                           overlay=True, keep_proportion=True)
-        helper_doc.save(output_pdf_path)
+        helper_doc.ez_save(output_pdf_path, compression_effort=100)
         print_success(f"✅ 制图小助手输出: {output_pdf_path}")
         return True
     except Exception as e:

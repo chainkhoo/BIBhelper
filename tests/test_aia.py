@@ -153,6 +153,36 @@ class HtmlRenderingTests(unittest.TestCase):
             docx_pdf_mock.assert_called_once()
 
 
+class OverviewPdfCompressionTests(unittest.TestCase):
+    def test_export_page_with_overlay_keeps_output_pdf_compact(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            source_pdf = temp_root / "source.pdf"
+            output_pdf = temp_root / "overview.pdf"
+
+            doc = core_module.fitz.open()
+            page = doc.new_page(width=595, height=842)
+            page.insert_image(
+                core_module.fitz.Rect(0, 0, 595, 842),
+                filename=str(core_module.ANNOTATION_OVERLAY_PATH),
+                keep_proportion=False,
+            )
+            page.insert_text((72, 72), "Investment Overview", fontsize=24)
+            doc.save(source_pdf)
+            doc.close()
+
+            exported = core_module._export_page_with_overlay(
+                source_pdf,
+                0,
+                output_pdf,
+                core_module.OVERLAY_SETTINGS.get("savings", core_module.OVERLAY_SETTINGS["default"]),
+            )
+
+            self.assertTrue(exported)
+            self.assertTrue(output_pdf.exists())
+            self.assertLess(output_pdf.stat().st_size, 2 * 1024 * 1024)
+
+
 class PremiumExtractionTests(unittest.TestCase):
     SAMPLE_SUMMARY_TEXT = """
 受保人姓名: Mary Jane 女士 年龄: 45
