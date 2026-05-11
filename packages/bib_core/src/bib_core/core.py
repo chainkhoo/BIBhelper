@@ -54,7 +54,7 @@ class GeneratedArtifact:
     relative_path: str
     kind: Literal["docx", "pdf", "overview_pdf", "zip", "html"]
     customer_name: str | None
-    plan_type: Literal["savings", "critical_illness"]
+    plan_type: Literal["savings", "critical_illness", "life_insurance"]
     source_filenames: list[str]
 
 
@@ -224,6 +224,12 @@ def _build_plan_config(resource_dir):
             'templates': {
                 'single': str(resource_dir / 'template_ci_single.docx')
             }
+        },
+        'life_insurance': {
+            'name': '人寿保险',
+            'templates': {
+                'single': str(resource_dir / 'template_li_single.docx')
+            }
         }
     }
 
@@ -231,6 +237,7 @@ def _build_plan_config(resource_dir):
 PLAN_CONFIG = _build_plan_config(RESOURCE_DIR)
 ANNOTATION_OVERLAY_PATH = RESOURCE_DIR / "aia_annotation_overlay.png"
 DETAIL_SECTION_KEYWORDS = ["详细说明", "詳細說明"]
+LIFE_INSURANCE_KEYWORD_PATTERN = re.compile(r"life[\s_-]*insurance", re.IGNORECASE)
 OVERLAY_SETTINGS = {
     'default': {
         'fit': 'contain',      # contain | width | height | cover
@@ -315,6 +322,18 @@ def _extract_name_and_age_from_text(text):
                 return candidate, age
 
     return None, age
+
+
+def _contains_life_insurance_keyword(text):
+    if not text:
+        return False
+    raw = str(text)
+    return (
+        "活然人生" in raw
+        or "人寿保险" in raw
+        or "人壽保險" in raw
+        or LIFE_INSURANCE_KEYWORD_PATTERN.search(raw) is not None
+    )
 
 
 def _parse_to_unicode_map(cmap_stream):
@@ -428,36 +447,37 @@ def _decode_special_sequences(pdf_path, text, pdf_obj=None):
     return pattern.sub(repl, text)
 
 
+def _extract_initial_pdf_text(pdf_path, max_pages=3):
+    with pdfplumber.open(pdf_path) as pdf:
+        all_text = ""
+        for page in pdf.pages[:max_pages]:
+            page_text = page.extract_text() or ""
+            all_text += page_text + "\n"
+        return _decode_special_sequences(pdf_path, all_text, pdf)
+
+
+def _extract_payment_term_from_text(text):
+    payment_patterns = [
+        r'(\d+)\s*年[缴繳][费費]',
+        r'[缴繳][费費]年期[：:]\s*(\d+)',
+        r'供款年期[：:]\s*(\d+)',
+        r'[缴繳][费費]期[间間][：:]\s*(\d+)'
+    ]
+
+    for pattern in payment_patterns:
+        matches = re.findall(pattern, text or "")
+        if matches:
+            return int(matches[0])
+    return None
+
+
 def extract_payment_term_and_age(pdf_path):
     """从PDF中提取缴费年限、年龄及受保人姓名"""
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            # 扫描前3页
-            all_text = ""
-            for page in pdf.pages[:3]:
-                page_text = page.extract_text() or ""
-                all_text += page_text + "\n"
-
-            all_text = _decode_special_sequences(pdf_path, all_text, pdf)
-
-            # 提取缴费年限
-            payment_term = None
-            payment_patterns = [
-                r'(\d+)\s*年[缴繳][费費]',
-                r'[缴繳][费費]年期[：:]\s*(\d+)',
-                r'供款年期[：:]\s*(\d+)',
-                r'[缴繳][费費]期[间間][：:]\s*(\d+)'
-            ]
-            
-            for pattern in payment_patterns:
-                matches = re.findall(pattern, all_text)
-                if matches:
-                    payment_term = int(matches[0])  # 取第一个匹配
-                    break
-            
-            name, age = _extract_name_and_age_from_text(all_text)
-            
-            return payment_term, age, name
+        all_text = _extract_initial_pdf_text(pdf_path)
+        payment_term = _extract_payment_term_from_text(all_text)
+        name, age = _extract_name_and_age_from_text(all_text)
+        return payment_term, age, name
 
     except Exception as e:
         print_warn(f"  - ⚠️ 提取 {pdf_path} 信息时出错: {e}")
@@ -597,13 +617,18 @@ def _extract_policy_total_premium(text):
 
     return None
 
-def classify_by_payment_term_and_age(payment_term, age, filename):
+def classify_by_payment_term_and_age(payment_term, age, filename, proposal_text=None):
     """根据缴费年限和年龄分类保险类型"""
+
+    if _contains_life_insurance_keyword(proposal_text):
+        return 'life_insurance'
 
     # 如果无法提取缴费年限，尝试文件名判断
     if payment_term is None:
         # 基于文件名的备用分类
-        if '储蓄' in filename or '财富增值' in filename:
+        if _contains_life_insurance_keyword(filename):
+            return 'life_insurance'
+        elif '储蓄' in filename or '财富增值' in filename:
             return 'savings'
         elif '重疾' in filename or '疾病保障' in filename:
             return 'critical_illness'
@@ -639,10 +664,17 @@ def scan_and_classify_pdfs(input_files=None):
         abs_path = str(pdf_file.resolve())
         try:
             # 提取缴费年限、年龄及姓名
-            payment_term, age, name = extract_payment_term_and_age(pdf_path)
+            initial_text = _extract_initial_pdf_text(pdf_path)
+            payment_term = _extract_payment_term_from_text(initial_text)
+            name, age = _extract_name_and_age_from_text(initial_text)
             
             # 根据缴费年限、年龄和文件名分类
-            plan_type = classify_by_payment_term_and_age(payment_term, age, pdf_file.name)
+            plan_type = classify_by_payment_term_and_age(
+                payment_term,
+                age,
+                pdf_file.name,
+                proposal_text=initial_text,
+            )
 
             is_segment = False
 
@@ -778,12 +810,18 @@ def _build_critical_tasks(files):
     return [{'type': 'critical_illness', 'mode': 'single', 'files': [path]} for path in files]
 
 
+def _build_life_insurance_tasks(files):
+    return [{'type': 'life_insurance', 'mode': 'single', 'files': [path]} for path in files]
+
+
 def _build_auto_tasks(abs_classified_pdfs, file_metadata):
     tasks = []
     if 'savings' in abs_classified_pdfs:
         tasks.extend(_build_savings_tasks(abs_classified_pdfs['savings'], file_metadata))
     if 'critical_illness' in abs_classified_pdfs:
         tasks.extend(_build_critical_tasks(abs_classified_pdfs['critical_illness']))
+    if 'life_insurance' in abs_classified_pdfs:
+        tasks.extend(_build_life_insurance_tasks(abs_classified_pdfs['life_insurance']))
     return _deduplicate_tasks(tasks)
 
 
@@ -1428,10 +1466,173 @@ def parse_critical_illness_plan(text, usd_cny, idx, shared_data=None):
     
     return data, shared_data
 
+
+def parse_life_insurance_plan(text, usd_cny, idx, shared_data=None):
+    """
+    解析人寿保险（活然人生）方案数据。
+
+    当前支持“活然人生”样式建议书，字段结构与人寿保险单独模板对应。
+    """
+    if shared_data is None:
+        shared_data = {}
+
+    extracted_name, extracted_age = _extract_name_and_age_from_text(text)
+    if extracted_name:
+        shared_data["name"] = extracted_name
+    if extracted_age is not None:
+        shared_data["age"] = extracted_age
+
+    age = shared_data.get("age")
+    if age is not None:
+        shared_data["age_plus_15"] = age + 15
+
+    if "先生" in text:
+        shared_data["gender"] = "男"
+    elif "女士" in text or "小姐" in text or "太太" in text:
+        shared_data["gender"] = "女"
+
+    if re.search(r"非吸烟者|非吸煙者", text):
+        shared_data["smoke"] = "非吸烟者"
+    elif re.search(r"吸烟者|吸煙者", text):
+        shared_data["smoke"] = "吸烟者"
+    else:
+        shared_data["smoke"] = "非吸烟者"
+
+    m_plan = re.search(r"建[议議][书書]摘要[:：]\s*([^\(（]+)\s*[\(（]([0-9]+)\s*年[缴繳][费費]", text)
+    if m_plan:
+        shared_data["plan_name"] = m_plan.group(1).strip()
+        shared_data["payment_term"] = m_plan.group(2).strip()
+
+    def _numbers_from_line(line):
+        numbers = re.findall(r"\d{1,3}(?:,\d{3})*(?:\.\d+)?", line or "")
+        values = []
+        for number in numbers:
+            try:
+                values.append(float(number.replace(",", "")))
+            except ValueError:
+                continue
+        return values
+
+    def _largest_amount_from_lines(lines):
+        for line in lines:
+            values = [value for value in _numbers_from_line(line) if value >= 1000]
+            if values:
+                return int(round(max(values)))
+        return 0
+
+    premium_usd = 0
+    premium_total = _extract_total_premium(text)
+    if premium_total:
+        premium_usd = round(premium_total, 2)
+    else:
+        plan_lines = [
+            line for line in text.splitlines()
+            if "活然人生" in line and re.search(r"[缴繳][费費]|年[缴繳][费費]", line)
+        ]
+        for line in plan_lines:
+            values = _numbers_from_line(line)
+            candidates = [value for value in values if value >= 1000 and "." in line]
+            if candidates:
+                premium_usd = round(candidates[-1], 2)
+                break
+
+    payment_term = int(shared_data.get("payment_term", 0)) if shared_data.get("payment_term") else 0
+    premium_usd_all = _extract_policy_total_premium(text)
+    if not premium_usd_all:
+        premium_usd_all = round(premium_usd * payment_term, 2) if premium_usd and payment_term else 0
+    premium_cny = round(premium_usd * usd_cny, 1) if premium_usd else 0
+    premium_cny_all_wan = round((premium_usd_all * usd_cny) / 10000, 1) if premium_usd_all > 0 and usd_cny > 0 else 0
+
+    summary_match = re.search(r"2\.\s*保障摘要(.+?)(?=\n\s*(?:3\.|详细说明|詳細說明|保障及利益摘要)|$)", text, re.S)
+    summary_text = summary_match.group(1) if summary_match else text
+    basic_lines = [
+        line for line in summary_text.splitlines()
+        if "活然人生" in line and ("保险计划" in line or "保險計劃" in line)
+    ]
+    accident_lines = [
+        line for line in summary_text.splitlines()
+        if "意外身故" in line and ("附加" in line or "契约" in line or "契約" in line)
+    ]
+    coverage_usd = _largest_amount_from_lines(basic_lines)
+    coverage_plus_usd = _largest_amount_from_lines(accident_lines)
+    coverage_total_usd = coverage_usd + coverage_plus_usd
+
+    def _cny_wan(amount):
+        return round(amount * usd_cny / 10000, 1) if amount else 0
+
+    detail_match = re.search(r"[详詳][细細][说說]明(.+?)(?=注[:：]|总账|總賬|总帳|$)", text, re.S)
+    detail_text = detail_match.group(1) if detail_match else text
+
+    def _find_detail_row(label):
+        match = re.search(rf"^\s*{re.escape(str(label))}\s*[岁歲]?\s+[^\n]*", detail_text, re.M)
+        return match.group(0) if match else None
+
+    def _parse_detail_row(label):
+        line = _find_detail_row(label)
+        if not line:
+            return None
+        values = _numbers_from_line(line)
+        if len(values) < 9:
+            return None
+        data_values = [int(round(value)) for value in values[2:]]
+        if len(data_values) < 7:
+            return None
+        return {
+            "premium_total": data_values[0],
+            "surrender_guaranteed": data_values[1],
+            "surrender_bonus": data_values[2],
+            "surrender_total": data_values[3],
+            "coverage_guaranteed": data_values[4],
+            "coverage_bonus": data_values[5],
+            "coverage_total": data_values[6],
+        }
+
+    age_plus_15 = shared_data.get("age_plus_15", 0)
+    row_p15 = _parse_detail_row(age_plus_15) if age_plus_15 else None
+    row_65 = _parse_detail_row("65")
+    row_85 = _parse_detail_row("85")
+
+    coverage_usd_p15 = row_p15["coverage_total"] if row_p15 else 0
+    cashout_usd_p15 = row_p15["surrender_total"] if row_p15 else 0
+    coverage_usd_65 = row_65["coverage_total"] if row_65 else 0
+    cashout_usd_65 = row_65["surrender_total"] if row_65 else 0
+    coverage_usd_85 = row_85["coverage_total"] if row_85 else 0
+    cashout_usd_85 = row_85["surrender_total"] if row_85 else 0
+
+    data = {
+        "age_plus_15": age_plus_15,
+        "premium_usd_0": premium_usd,
+        "premium_cny_0": premium_cny,
+        "premium_usd_all": premium_usd_all,
+        "premium_cny_all_wan": premium_cny_all_wan,
+        "coverage_usd": coverage_usd,
+        "coverage_cny": _cny_wan(coverage_usd),
+        "coverage_plus_usd": coverage_plus_usd,
+        "coverage_plus_cny": _cny_wan(coverage_plus_usd),
+        "coverage_total_usd": coverage_total_usd,
+        "coverage_total_cny": _cny_wan(coverage_total_usd),
+        "coverage_usd_p15": coverage_usd_p15,
+        "coverage_cny_p15": _cny_wan(coverage_usd_p15),
+        "coverage_usd_65": coverage_usd_65,
+        "coverage_cny_65": _cny_wan(coverage_usd_65),
+        "coverage_usd_85": coverage_usd_85,
+        "coverage_cny_85": _cny_wan(coverage_usd_85),
+        "cashout_usd_p15": cashout_usd_p15,
+        "cashout_cny_p15": _cny_wan(cashout_usd_p15),
+        "cashout_usd_65": cashout_usd_65,
+        "cashout_cny_65": _cny_wan(cashout_usd_65),
+        "cashout_usd_85": cashout_usd_85,
+        "cashout_cny_85": _cny_wan(cashout_usd_85),
+    }
+
+    return data, shared_data
+
+
 # 解析函数分派器
 PARSE_FUNCTIONS = {
     'savings': parse_savings_plan,  # 使用新的储蓄险解析函数
     'critical_illness': parse_critical_illness_plan,
+    'life_insurance': parse_life_insurance_plan,
 }
 
 # ==============================================================================
@@ -1725,6 +1926,13 @@ def create_output_directory_and_save_files(all_data, plan_name, mode, files, ena
             premium_text = _format_premium_display(all_data)
         x_val = f"年交{premium_text}万美金"
         plan_label = '财富增值方案'
+    elif plan_name == '人寿保险':
+        coverage_wan = _pick_number(['coverage_usd_wan', 'coverage_usd_10k', 'coverage_usd', 'coverage_total_usd'])
+        if coverage_wan is not None and coverage_wan > 1000:
+            coverage_wan = coverage_wan / 10000.0
+        coverage_text = f"{(coverage_wan if coverage_wan is not None else 0):.2f}".rstrip('0').rstrip('.')
+        x_val = f"{coverage_text or '0'}万美金保额"
+        plan_label = '终身人寿保障方案'
     else:
         coverage_wan = _pick_number(['coverage_usd_wan', 'sum_assured_usd_wan', 'coverage_usd_10k', 'coverage_usd', 'sum_assured_usd'])
         if coverage_wan is None:
@@ -2336,7 +2544,7 @@ def run_pipeline(options: RunOptions) -> RunResult:
 def main():
     """主函数"""
     print_info("🏛️ AIA 保险方案总结书生成器")
-    print_info("支持储蓄险、重疾险方案的自动化处理\n")
+    print_info("支持储蓄险、重疾险、人寿保险方案的自动化处理\n")
     print_info("=" * 60)
     check_pdf_conversion_tools()
     print_info("=" * 60)

@@ -104,9 +104,91 @@ class SavingsTaskTests(unittest.TestCase):
 class ScopeRegressionTests(unittest.TestCase):
     def test_current_scope_excludes_education(self):
         self.assertNotIn("education", aia.PLAN_CONFIG)
-        self.assertEqual(set(aia.PARSE_FUNCTIONS), {"savings", "critical_illness"})
+        self.assertEqual(set(aia.PARSE_FUNCTIONS), {"savings", "critical_illness", "life_insurance"})
         self.assertEqual(aia.classify_by_payment_term_and_age(5, 10, "儿童方案.pdf"), "savings")
         self.assertIsNone(aia.classify_by_payment_term_and_age(None, 10, "教育金方案.pdf"))
+
+
+class LifeInsuranceTests(unittest.TestCase):
+    SAMPLE_TEXT = """
+分红保单销售说明文件
+1. 建议书摘要：「活然人生」保险计划（5 年缴费）
+受保人姓名：李琪 女士 年龄：34 性别：女 非吸烟者
+2. 保障摘要
+保单货币：美元
+(i) 基本保单
+保障项目 投保时保额 投保时年缴保费 保费供款年期 保障年期
+「活然人生」保险计划（5 年缴费） 49,416 3,000.05 5 终身
+(ii) 附加契约
+意外身故赔偿（活然人生）附加契约 98,832 0.00 不适用 15
+免付保费附加契约（基本计划） 49,416 0.00 不适用 5
+保险业监管局(IA)保费征费 3.00
+投保时年缴总保费： 3,003.05
+详细说明
+年龄 保单年度 缴付保费总额 退保发还金额 身故赔偿额
+49 15 15,000 4,712 13,802 18,514 49,416 13,802 63,218
+65 31 15,000 9,596 54,960 64,556 49,416 54,960 104,376
+85 51 15,000 18,604 242,959 261,563 49,416 242,959 292,375
+""".strip()
+
+    def test_content_identifies_life_insurance_before_payment_term_rule(self):
+        self.assertEqual(
+            aia.classify_by_payment_term_and_age(
+                5,
+                34,
+                "ordinary.pdf",
+                proposal_text="计划：「活然人生」保险计划（5 年缴费）",
+            ),
+            "life_insurance",
+        )
+
+    def test_life_insurance_filename_fallback_is_limited_to_requested_keywords(self):
+        filenames = [
+            "活然人生.pdf",
+            "人寿保险.pdf",
+            "人壽保險.pdf",
+            "life insurance.pdf",
+            "LIFE INSURANCE.pdf",
+        ]
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    aia.classify_by_payment_term_and_age(None, None, filename),
+                    "life_insurance",
+                )
+
+    def test_build_auto_tasks_creates_single_life_insurance_tasks(self):
+        files = [str(ROOT / "life-a.pdf"), str(ROOT / "life-b.pdf")]
+        tasks = core_module._build_auto_tasks({"life_insurance": files}, {})
+        self.assertEqual(
+            tasks,
+            [
+                {"type": "life_insurance", "mode": "single", "files": [files[0]]},
+                {"type": "life_insurance", "mode": "single", "files": [files[1]]},
+            ],
+        )
+
+    def test_parse_life_insurance_plan_extracts_template_fields(self):
+        data, shared_data = core_module.parse_life_insurance_plan(self.SAMPLE_TEXT, 7.2, 0, {})
+
+        self.assertEqual(shared_data["name"], "李琪")
+        self.assertEqual(shared_data["age"], 34)
+        self.assertEqual(shared_data["gender"], "女")
+        self.assertEqual(shared_data["smoke"], "非吸烟者")
+        self.assertEqual(shared_data["payment_term"], "5")
+        self.assertEqual(data["age_plus_15"], 49)
+        self.assertEqual(data["premium_usd_0"], 3000)
+        self.assertEqual(data["premium_cny_0"], 21600.0)
+        self.assertEqual(data["premium_cny_all_wan"], 10.8)
+        self.assertEqual(data["coverage_usd"], 49416)
+        self.assertEqual(data["coverage_plus_usd"], 98832)
+        self.assertEqual(data["coverage_total_usd"], 148248)
+        self.assertEqual(data["coverage_usd_p15"], 63218)
+        self.assertEqual(data["cashout_usd_p15"], 18514)
+        self.assertEqual(data["coverage_usd_65"], 104376)
+        self.assertEqual(data["cashout_usd_65"], 64556)
+        self.assertEqual(data["coverage_usd_85"], 292375)
+        self.assertEqual(data["cashout_usd_85"], 261563)
 
 
 class HtmlRenderingTests(unittest.TestCase):
@@ -424,6 +506,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(jobs_response.status_code, 200)
         self.assertIn("history.pdf", jobs_response.text)
 
+    def test_upload_page_lists_supported_plan_types(self):
+        self.login()
+        response = self.client.get("/upload")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("储蓄险、重疾险、人寿保险（活然人生）", response.text)
+
     def test_api_rejects_invalid_pdf(self):
         response = self.client.post(
             "/api/v1/process",
@@ -451,7 +539,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("模板管理", response.text)
         self.assertIn("储蓄险单独总结书模板", response.text)
+        self.assertIn("人寿保险单独总结书模板", response.text)
         self.assertTrue(self.app.state.template_store.current_path("savings_single").exists())
+        self.assertTrue(self.app.state.template_store.current_path("life_insurance_single").exists())
         self.assertNotIn("转换状态", response.text)
 
     def test_template_upload_and_restore(self):

@@ -109,6 +109,12 @@ TEMPLATE_DEFINITIONS = {
         "description": "重疾险单方案总结书模板。",
         "convertible": True,
     },
+    "life_insurance_single": {
+        "filename": "template_li_single.docx",
+        "label": "人寿保险单独总结书模板",
+        "description": "人寿保险单方案总结书模板。",
+        "convertible": True,
+    },
     "savings_overlay": {
         "filename": "aia_annotation_overlay.png",
         "label": "储蓄险投资总览图叠加模板",
